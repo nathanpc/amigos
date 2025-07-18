@@ -1,7 +1,7 @@
 /**
  * amigos.c
- * A micro Gopher server. Super tiny, ultra portable, single file, Gopher server
- * written in ANSI C.
+ * A micro Gopher server. Super tiny, ultra portable, single file, standalone,
+ * Gopher server written in ANSI C.
  *
  * @author Nathan Campos <nathan@innoveworkshop.com>
  */
@@ -77,6 +77,12 @@ int main(int argc, char **argv) {
 }
 
 /**
+ * =============================================================================
+ * === Gopher Item Abstractions ================================================
+ * =============================================================================
+ */
+
+/**
  * Allocates a brand new Gopher item object.
  *
  * @warning This function allocates memory that must be free'd using a special
@@ -131,6 +137,12 @@ void gopher_item_print(gopher_item_t *item) {
 		" %u\n", item->type, item->name, item->selector, item->hostname,
 		item->port);
 }
+
+/**
+ * =============================================================================
+ * === Lookup Constants ========================================================
+ * =============================================================================
+ */
 
 /**
  * Initializes our constant variables that will be used later for quick checks.
