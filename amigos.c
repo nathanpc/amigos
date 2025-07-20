@@ -10,6 +10,16 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <signal.h>
+
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+
+#include "config.h"
 
 /* Some common definitions. */
 #define DEFAULT_PORT 70
@@ -17,8 +27,16 @@
 #define INVALID_HOST "null.host"
 #define INVALID_PORT 1
 
+/* Socket abstractions. */
+typedef int sockfd_t;
+#define SOCKERR -1
+
 /* Constants for quick validation. */
 static char *invalid_host_c;
+
+/* Global state variables. */
+static int running;
+static sockfd_t server_socket;
 
 /**
  * Abstraction of a Gopher item in a listing.
@@ -38,10 +56,26 @@ gopher_item_t* gopher_item_new(void);
 void gopher_item_free(gopher_item_t *item);
 void gopher_item_print(gopher_item_t *item);
 
+/* Server operations. */
+sockfd_t server_start(int af, const char *addr, uint16_t port);
+void server_stop(void);
+
 /* Misc. */
 void const_init(void);
 void const_free(void);
 
+
+/**
+ * Handles a process signal.
+ *
+ * @param signum Signal number that was triggered.
+ */
+void signal_handler(int signum) {
+	if (signum == SIGINT) {
+		printf("Got SIGINT\n");
+		server_stop();
+	}
+}
 
 /**
  * Application's main entry point.
@@ -53,9 +87,19 @@ void const_free(void);
  */
 int main(int argc, char **argv) {
 	gopher_item_t *item;
+	int retval;
 	
-	/* Initialize constants. */
+	/* Register signal handler. */
+	signal(SIGINT, signal_handler);
+	
+	/* Initialize constants and start server. */
+	retval = 0;
 	const_init();
+	server_socket = server_start(AF_INET, "0.0.0.0", 70);
+	if (server_socket == SOCKERR) {
+		retval = 1;
+		goto finish;
+	}
 	
 	/* Example of an unedited item. */
 	item = gopher_item_new();
@@ -70,10 +114,128 @@ int main(int argc, char **argv) {
 	item->port = DEFAULT_PORT;
 	gopher_item_print(item);
 	gopher_item_free(item);
-	
-	/* Free constants and exit. */
+
+finish:	
+	/* Free resources and exit. */
+	server_stop();
 	const_free();
-	return 0;
+	return retval;
+}
+
+/**
+ * =============================================================================
+ * === Server ==================================================================
+ * =============================================================================
+ */
+
+/**
+ * Starts up the server.
+ *
+ * @param af   Address family.
+ * @param addr IP address to bind ourselves to.
+ * @param port Port to bind ourselves to.
+ *
+ * @return Socket file descriptor or SOCKERR if an error occurred.
+ */
+sockfd_t server_start(int af, const char *addr, uint16_t port) {
+	struct sockaddr_storage sa;
+	sockfd_t sockfd;
+	socklen_t addrlen;
+	int flag;
+	
+	/* Zero out the address structure and cache its size. */
+	memset(&sa, '\0', sizeof(sa));
+	addrlen = af == AF_INET ? sizeof(struct sockaddr_in) :
+		sizeof(struct sockaddr_in6);
+	
+	/* Ensure that we don't have a server already running. */
+	if (running != 0) {
+		printf("ERROR: Tried to start a server while already running.\n");
+		return SOCKERR;
+	}
+	
+	/* Get a socket file descriptor. */
+	sockfd = socket(af == AF_INET ? PF_INET : PF_INET6, SOCK_STREAM, 0);
+	if (sockfd == SOCKERR) {
+		perror("ERROR: Failed to get a socket file descriptor");
+		return SOCKERR;
+	}
+	
+	/* Populate socket address information. */
+	if (af == AF_INET) {
+		struct sockaddr_in *inaddr = (struct sockaddr_in*)&sa;
+		inaddr->sin_family = af;
+		inaddr->sin_port = htons(port);
+		inaddr->sin_addr.s_addr = inet_addr(addr);
+	} else {
+		struct sockaddr_in6 *in6addr = (struct sockaddr_in6*)&sa;
+		in6addr->sin6_family = af;
+		in6addr->sin6_port = htons(port);
+		printf("ERROR: IPv6 not yet implemented.\n");
+		return SOCKERR;
+	}
+	
+	/* Bind address to socket. */
+	if (bind(sockfd, (struct sockaddr*)&sa, addrlen) == SOCKERR) {
+		perror("ERROR: Failed binding to socket");
+		close(sockfd);
+		return SOCKERR;
+	}
+	
+	/* Ensure we don't have to worry about address already in use errors. */
+	flag = 1;
+	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &flag,
+			sizeof(flag)) == SOCKERR) {
+		perror("ERROR: Failed to set socket address reuse");
+		close(sockfd);
+		return SOCKERR;
+	}
+	
+	/* Start listening on our desired socket. */
+	if (listen(sockfd, LISTEN_BACKLOG) == SOCKERR) {
+		perror("ERROR: Failed to listen on socket");
+		close(sockfd);
+		return SOCKERR;
+	}
+	
+	/* TODO: Move to its own function. */
+	
+	/* Run server loop. */
+	printf("Server running on %s:%u\n", addr, port);
+	running = 1;
+	while (running) {
+		sockfd_t clientsock;
+		socklen_t socklen;
+		char selector[255];
+		int len;
+		
+		/* Accept the client connection. */
+		socklen = sizeof(sa);
+		clientsock = accept(sockfd, (struct sockaddr*)&sa, &socklen);
+		if (clientsock == SOCKERR) {
+			perror("ERROR: Failed to accept connection");
+			continue;
+		}
+		
+		/* Read the selector from client's request. */
+		len = read(clientsock, selector, 254);
+		selector[len] = '\0';
+		
+		printf("Got: '%s'\n", selector);
+		close(clientsock);
+	}
+	
+	return sockfd;
+}
+
+/**
+ * Stops the server immediately.
+ */
+void server_stop(void) {
+	running = 0;
+	if ((server_socket != server_socket) && (close(server_socket) == SOCKERR))
+		perror("ERROR: Failed to close server socket");
+	server_socket = SOCKERR;
 }
 
 /**
