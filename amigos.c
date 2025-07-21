@@ -430,6 +430,7 @@ void* server_process_request(void *data) {
 		/* TODO: Check if there's a gophermap file in directory. */
 		if (!client_send_dir(conn, fpath, 1))
 			goto close_conn;
+		send(conn->sockfd, ".", 1, 0);
 	} else if (file_exists(fpath)) {
 		/* Selector matches a file. */
 		if (!client_send_file(conn, fpath))
@@ -438,6 +439,7 @@ void* server_process_request(void *data) {
 		/* Looks like the client requested a path that doesn't exist. */
 		if (!client_send_error(conn, "Selector not found."))
 			goto close_conn;
+		send(conn->sockfd, ".", 1, 0);
 	}
 
 close_conn:
@@ -552,7 +554,6 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 	
 	/* Set common Gopher item parameters. */
 	item = gopher_item_new();
-	item->name = name;
 	item->hostname = strdup(DEFAULT_HOSTNAME);
 	item->port = DEFAULT_PORT;
 	
@@ -570,9 +571,10 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 		
 		/* Build up Gopher item entry. */
 		item->type = dirent->d_type == DT_DIR ? '1' : '0';
-		item->selector = dirent->d_name;
 		snprintf(name, 71, "%s%c", dirent->d_name,
-			dirent->d_type == DT_DIR ? '/' : ' ');
+			(dirent->d_type == DT_DIR ? '/' : ' '));
+		item->name = name;
+		item->selector = dirent->d_name;
 		
 		/* Send the item to the client. */
 		if (!client_send_item(conn, item))
