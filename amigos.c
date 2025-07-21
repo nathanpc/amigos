@@ -398,6 +398,7 @@ void* server_process_request(void *data) {
 	/* Ensure the request wasn't too long. */
 	if (len >= 255) {
 		printf("ERROR: Selector unusually long, closing connection.\n");
+		client_send_error(conn, "Selector string longer than 255 characters");
 		goto close_conn;
 	}
 	
@@ -529,6 +530,7 @@ int client_send_file(const client_conn_t *conn, const char *path) {
 int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 	gopher_item_t *item;
 	struct dirent *dirent;
+	char name[71];
 	DIR *dh;
 	int ret;
 	
@@ -550,6 +552,7 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 	
 	/* Set common Gopher item parameters. */
 	item = gopher_item_new();
+	item->name = name;
 	item->hostname = strdup(DEFAULT_HOSTNAME);
 	item->port = DEFAULT_PORT;
 	
@@ -567,21 +570,23 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 		
 		/* Build up Gopher item entry. */
 		item->type = dirent->d_type == DT_DIR ? '1' : '0';
-		item->name = strdup(dirent->d_name);
 		item->selector = dirent->d_name;
+		snprintf(name, 71, "%s%c", dirent->d_name,
+			dirent->d_type == DT_DIR ? '/' : ' ');
 		
 		/* Send the item to the client. */
 		if (!client_send_item(conn, item))
 			ret = 0;
 		
 		/* Free used resources. */
-		free(item->name);
 		item->name = NULL;
 		item->selector = NULL;
 	}
 	
 	/* Free up resources. */
 	closedir(dh);
+	item->name = NULL;
+	item->selector = NULL;
 	gopher_item_free(item);
 	item = NULL;
 
