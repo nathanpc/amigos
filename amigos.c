@@ -301,25 +301,25 @@ void server_loop(int af, sockfd_t sockfd) {
 		
 		/* Check if we can accept new connections at the moment. */
 		for (i = 0; i < MAX_CONNECTIONS; i++) {
-			client_conn_t conn;
+			client_conn_t *conn;
 			struct sockaddr_storage csa;
 			socklen_t socklen;
 			char addrstr[INET6_ADDRSTRLEN];
 
 			/* Ignore slots currently in use. */
-			conn = connections[i];
-			if (conn.status & CONN_INUSE)
+			conn = &connections[i];
+			if (conn->status & CONN_INUSE)
 				continue;
 			
 			/* Accept the client connection. */
 			socklen = sizeof(csa);
-			conn.sockfd = accept(sockfd, (struct sockaddr*)&csa, &socklen);
-			if (conn.sockfd == SOCKERR) {
+			conn->sockfd = accept(sockfd, (struct sockaddr*)&csa, &socklen);
+			if (conn->sockfd == SOCKERR) {
 				perror("ERROR: Failed to accept connection");
-				conn.status = 0;
+				conn->status = 0;
 				break;
 			}
-			conn.status = CONN_INUSE;
+			conn->status = CONN_INUSE;
 			
 			/* Get client address string and announce connection. */
 			if (inet_addr_str(af, &csa, addrstr) == NULL) {
@@ -329,11 +329,11 @@ void server_loop(int af, sockfd_t sockfd) {
 			}
 			
 			/* Process the client's request. */
-			if (pthread_create(&conn.thread, NULL, server_process_request,
-					&conn)) {
+			if (pthread_create(&conn->thread, NULL, server_process_request,
+					conn)) {
 				printf("ERROR: Failed to create request processing thread\n");
-				close(conn.sockfd);
-				conn.status = 0;
+				close(conn->sockfd);
+				conn->status = 0;
 				break;
 			}
 			
@@ -350,17 +350,40 @@ void server_loop(int af, sockfd_t sockfd) {
  * @param data Pointer to a client_conn_t structure.
  */
 void* server_process_request(void *data) {
-	char selector[255];
-	size_t len;
-	client_conn_t *conn = (client_conn_t*)data;
+	client_conn_t *conn;
+	char selector[256];
+	ssize_t len;
+	int i;
+	conn = (client_conn_t*)data;
 
 	/* Read the selector from client's request. */
-	len = read(conn->sockfd, selector, 254);
+	if ((len = recv(conn->sockfd, selector, 255, 0)) < 0) {
+		if (running)
+			perror("ERROR: Failed to receive selector");
+		goto close_conn;
+	}
 	selector[len] = '\0';
-	printf("Got: '%s'\n", selector);
 	
+	/* Ensure the request wasn't too long. */
+	if (len >= 255) {
+		printf("ERROR: Selector unusually long, closing connection.\n");
+		goto close_conn;
+	}
+	
+	/* Terminate selector string before CRLF. */
+	for (i = 0; i < len; i++) {
+		if ((selector[i] == '\r') || (selector[i] == '\n')) {
+			selector[i] = '\0';
+			break;
+		}
+	}
+
+	printf("Got: '%s'\n", selector);
+
+close_conn:
 	/* Close the client connection and signal that we are finished here. */
-	close(conn->sockfd);
+	if (conn->sockfd != SOCKERR)
+		close(conn->sockfd);
 	conn->sockfd = SOCKERR;
 	conn->status |= CONN_FINISHED;
 	
