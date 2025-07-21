@@ -101,6 +101,7 @@ const char* inet_addr_str(int af, void *addr, char *buf);
 int file_exists(const char *fname);
 int dir_exists(const char *path);
 size_t path_concat(char **buf, ...);
+int path_sanitize(char *path);
 
 /* Misc. */
 void const_init(void);
@@ -405,8 +406,10 @@ void* server_process_request(void *data) {
 			break;
 		}
 	}
-
-	printf("Got: '%s'\n", selector);
+	
+	/* Sanitize selector before using it. */
+	path_sanitize(selector);
+	printf("Client requested selector '%s'\n", selector);
 
 close_conn:
 	/* Close the client connection and signal that we are finished here. */
@@ -581,6 +584,41 @@ int dir_exists(const char *path) {
 	/* Check if it's actually a directory. */
 	return S_ISDIR(sb.st_mode);
 #endif /* _WIN32 */
+}
+
+/**
+ * Sanitizes a path and converts path separators if needed.
+ *
+ * @param path Path to be sanitized.
+ *
+ * @return TRUE if path was altered.
+ */
+int path_sanitize(char *path) {
+	int ret;
+	char *buf;
+
+	ret = 0;
+	buf = path;
+	while (*buf != '\0') {
+		/* Stop bad actors from doing bad things. */
+		if ((*buf == '.') && (*(buf + 1) == '.')) {
+			*buf = '\0';
+			ret = 1;
+			break;
+		}
+	
+		/* Normalize path separators. */
+#ifdef _WIN32
+		if (*buf == '/') {
+			*buf = '\\';
+			ret = 1;
+		}
+#endif /* _WIN32 */
+
+		buf++;
+	}
+	
+	return ret;
 }
 
 /**
