@@ -380,9 +380,13 @@ void server_loop(int af, sockfd_t sockfd) {
 void* server_process_request(void *data) {
 	client_conn_t *conn;
 	char selector[256];
+	char *fpath;
 	ssize_t len;
 	int i;
+	
+	/* Initialize values. */
 	conn = (client_conn_t*)data;
+	fpath = NULL;
 
 	/* Read the selector from client's request. */
 	if ((len = recv(conn->sockfd, selector, 255, 0)) < 0) {
@@ -410,8 +414,48 @@ void* server_process_request(void *data) {
 	/* Sanitize selector before using it. */
 	path_sanitize(selector);
 	printf("Client requested selector '%s'\n", selector);
+	
+	/* Build local file request path from selector. */
+	if (path_concat(&fpath, docroot, selector, NULL) == 0) {
+		printf("ERROR: Failed to build request path for selector %s\n",
+			selector);
+		goto close_conn;
+	}
+	
+	/* Try to get a file to reply to client. */
+	if (file_exists(fpath)) {
+		FILE *fh;
+		size_t flen;
+		uint8_t buf[256];
+		
+		/* Open file for reading. */
+		fh = fopen(fpath, "rb");
+		if (fh == NULL) {
+			printf("ERROR: Failed to open file %s for request selector '%s'\n",
+				fpath, selector);
+			goto close_conn;
+		}
+		
+		/* Pipe file contents straight to socket. */
+		while ((flen = fread(buf, sizeof(char), 256, fh)) > 0) {
+			if (send(conn->sockfd, buf, flen, 0) < 0) {
+				perror("ERROR: Failed to pipe contents of file to socket");
+				break;
+			}
+		}
+		
+		/* Close file handle. */
+		fclose(fh);
+	} else {
+		/* TODO: Send selector not found error. */
+	}
 
 close_conn:
+	/* Free up allocated resources. */
+	if (fpath != NULL)
+		free(fpath);
+	fpath = NULL;
+
 	/* Close the client connection and signal that we are finished here. */
 	if (conn->sockfd != SOCKERR)
 		close(conn->sockfd);
