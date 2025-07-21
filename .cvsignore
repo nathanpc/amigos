@@ -1,4 +1,4 @@
 config.h
-godocs/
+godocs
 *.o
 amigos
