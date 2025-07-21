@@ -9,17 +9,20 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <string.h>
 #include <signal.h>
 #include <pthread.h>
-
 #include <unistd.h>
+
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
+
 #include <netinet/in.h>
-#include <netdb.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 
 #include "config.h"
 
@@ -29,6 +32,11 @@
 #define INVALID_TYPE   '\0'
 #define INVALID_HOST   "null.host"
 #define INVALID_PORT   1
+#ifdef _WIN32
+	#define PATH_SEPARATOR '\\'
+#else
+	#define PATH_SEPARATOR '/'
+#endif /* _WIN32 */
 
 /* Socket abstractions. */
 typedef int sockfd_t;
@@ -72,6 +80,7 @@ static char *invalid_host_c;
 
 /* Global state variables. */
 static int running;
+static char *docroot;
 static sockfd_t server_socket;
 static client_conn_t connections[MAX_CONNECTIONS];
 
@@ -87,6 +96,11 @@ void server_loop(int af, sockfd_t sockfd);
 void server_stop(void);
 void* server_process_request(void *data);
 const char* inet_addr_str(int af, void *addr, char *buf);
+
+/* File system utilities. */
+int file_exists(const char *fname);
+int dir_exists(const char *path);
+size_t path_concat(char **buf, ...);
 
 /* Misc. */
 void const_init(void);
@@ -115,6 +129,19 @@ int main(int argc, char **argv) {
 	gopher_item_t *item;
 	int retval;
 	int i;
+	
+	/* Check if we have a document root folder. */
+	if (argc < 2) {
+		printf("usage: %s docroot\n", argv[0]);
+		return 1;
+	}
+	docroot = argv[1];
+	
+	/* Check if document root folder actually exists. */
+	if (!dir_exists(docroot)) {
+		printf("ERROR: Document root path '%s' doesn't exist.\n", docroot);
+		return 1;
+	}
 	
 	/* Register signal handler. */
 	signal(SIGINT, signal_handler);
@@ -182,11 +209,10 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 	int flag;
 	struct timeval tv;
 	
-	/* Zero out address structure, cache its size, and fill timeout value. */
+	/* Zero out address structure and cache its size. */
 	memset(&sa, '\0', sizeof(sa));
 	addrlen = af == AF_INET ? sizeof(struct sockaddr_in) :
 		sizeof(struct sockaddr_in6);
-	tv.tv_sec = RECV_TIMEOUT;
 	
 	/* Ensure that we don't have a server already running. */
 	if (running != 0) {
@@ -215,13 +241,6 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 		return SOCKERR;
 	}
 	
-	/* Bind address to socket. */
-	if (bind(sockfd, (struct sockaddr*)&sa, addrlen) == SOCKERR) {
-		perror("ERROR: Failed binding to socket");
-		close(sockfd);
-		return SOCKERR;
-	}
-	
 	/* Ensure we don't have to worry about address already in use errors. */
 	flag = 1;
 	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &flag,
@@ -232,9 +251,17 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 	}
 	
 	/* Set a receive timeout so that we don't block indefinitely. */
+	tv.tv_sec = RECV_TIMEOUT;
 	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv,
 			sizeof(tv)) == SOCKERR) {
 		perror("ERROR: Failed to set socket receive timeout");
+		close(sockfd);
+		return SOCKERR;
+	}
+	
+	/* Bind address to socket. */
+	if (bind(sockfd, (struct sockaddr*)&sa, addrlen) == SOCKERR) {
+		perror("ERROR: Failed binding to socket");
 		close(sockfd);
 		return SOCKERR;
 	}
@@ -372,7 +399,8 @@ void* server_process_request(void *data) {
 	
 	/* Terminate selector string before CRLF. */
 	for (i = 0; i < len; i++) {
-		if ((selector[i] == '\r') || (selector[i] == '\n')) {
+		if ((selector[i] == '\t') || (selector[i] == '\r') ||
+				(selector[i] == '\n')) {
 			selector[i] = '\0';
 			break;
 		}
@@ -470,6 +498,150 @@ void gopher_item_print(gopher_item_t *item) {
 	printf("Type:     '%c'\nName:     %s\nSelector: %s\nHostname: %s\nPort:    "
 		" %u\n", item->type, item->name, item->selector, item->hostname,
 		item->port);
+}
+
+/**
+ * =============================================================================
+ * === File System Utilities ===================================================
+ * =============================================================================
+ */
+
+/**
+ * Checks if a file exists.
+ *
+ * @param  fname File path to be checked.
+ *
+ * @return TRUE if the file exists.
+ */
+int file_exists(const char *fname) {
+#ifdef _WIN32
+	DWORD dwAttrib;
+	LPTSTR szPath;
+
+	/* Should we even check? */
+	if (fname == NULL)
+		return 0;
+
+	/* Convert the file path to UTF-16. */
+	szPath = utf16_mbstowcs(fname);
+	if (szPath == NULL)
+		return 0;
+
+	/* Get file attributes and return. */
+	dwAttrib = GetFileAttributes(szPath);
+	free(szPath);
+	return (dwAttrib != INVALID_FILE_ATTRIBUTES) &&
+		   !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY);
+#else
+	/* Should we even check? */
+	if (fname == NULL)
+		return 0;
+
+	return access(fname, F_OK) != -1;
+#endif /* _WIN32 */
+}
+
+/**
+ * Checks if a directory exists and ensures it's actually a directory.
+ *
+ * @param path Path to a directory to be checked.
+ *
+ * @return TRUE if the path represents an existing directory.
+ */
+int dir_exists(const char *path) {
+#ifdef _WIN32
+	DWORD dwAttrib;
+	LPTSTR szPath;
+
+	/* Should we even check? */
+	if (path == NULL)
+		return 0;
+
+	/* Convert the file path to UTF-16. */
+	szPath = utf16_mbstowcs(path);
+	if (szPath == NULL)
+		return 0;
+
+	/* Get file attributes and return. */
+	dwAttrib = GetFileAttributes(szPath);
+	free(szPath);
+	return (dwAttrib != INVALID_FILE_ATTRIBUTES) &&
+		   (dwAttrib & FILE_ATTRIBUTE_DIRECTORY);
+#else
+	struct stat sb;
+
+	/* Should we even check? */
+	if (path == NULL)
+		return 0;
+
+	/* Ensure that we can stat the path. */
+	if (stat(path, &sb) < 0)
+		return 0;
+
+	/* Check if it's actually a directory. */
+	return S_ISDIR(sb.st_mode);
+#endif /* _WIN32 */
+}
+
+/**
+ * Concatenates paths together safely.
+ *
+ * @warning This function allocates memory that must be free'd by you!
+ *
+ * @param buf Pointer to final path string. (Allocated internally)
+ * @param ... Paths to be concatenated. WARNING: A NULL must be placed at the
+ *            end to indicate the end of the list.
+ *
+ * @return Size of the final buffer or 0 if an error occurred.
+ */
+size_t path_concat(char **buf, ...) {
+	va_list ap;
+	size_t len;
+	const char *path;
+	char *cur;
+
+	/* Initialize things and ensure we leave space for the NULL terminator. */
+	*buf = NULL;
+	len = 1;
+
+	/* Go through the paths. */
+	va_start(ap, buf);
+	path = va_arg(ap, char *);
+	while (path != NULL) {
+		size_t plen;
+
+		/* Reallocate the buffer memory and set the cursor for concatenation. */
+		plen = len;
+		len += strlen(path);
+		*buf = (char *)realloc(*buf, (len + 1) * sizeof(char));
+		if (*buf == NULL)
+			return 0L;
+		cur = (*buf) + plen - 1;
+
+		/* Should we bother prepending the path separator? */
+		if ((plen > 1) && (*(cur - 1) != PATH_SEPARATOR)) {
+			*cur = PATH_SEPARATOR;
+			cur++;
+			len++;
+		}
+
+		/* Concatenate the next path. */
+		while (*path != '\0') {
+			*cur = *path;
+
+			cur++;
+			path++;
+		}
+
+		/* Ensure we NULL terminate the string. */
+		*cur = '\0';
+
+		/* Fetch the next path. */
+		path = va_arg(ap, char *);
+	}
+	va_end(ap);
+
+	return len;
 }
 
 /**
