@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <signal.h>
+#include <pthread.h>
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -22,26 +23,23 @@
 #include "config.h"
 
 /* Some common definitions. */
-#define DEFAULT_PORT 70
-#define INVALID_TYPE '\0'
-#define INVALID_HOST "null.host"
-#define INVALID_PORT 1
+#define LISTEN_BACKLOG 5
+#define DEFAULT_PORT   70
+#define INVALID_TYPE   '\0'
+#define INVALID_HOST   "null.host"
+#define INVALID_PORT   1
 
 /* Socket abstractions. */
 typedef int sockfd_t;
 #define SOCKERR -1
-
-/* Constants for quick validation. */
-static char *invalid_host_c;
-
-/* Global state variables. */
-static int running;
-static sockfd_t server_socket;
+#ifndef INET6_ADDRSTRLEN
+	#define INET6_ADDRSTRLEN 46
+#endif /* !INET6_ADDRSTRLEN */
 
 /**
  * Abstraction of a Gopher item in a listing.
  */
-typedef struct gopher_item_s {
+typedef struct gopher_item {
 	char type;
 	char _pad;
 	uint16_t port;
@@ -49,6 +47,32 @@ typedef struct gopher_item_s {
 	char *selector;
 	char *hostname;
 } gopher_item_t;
+
+/**
+ * Status flags used by the client_conn_t structure.
+ */
+enum client_conn_status {
+	CONN_FINISHED = 0x01,
+	CONN_INUSE    = 0x02
+};
+
+/**
+ * Client connection thread object.
+ */
+typedef struct client_conn {
+	uint8_t status;
+	sockfd_t sockfd;
+	pthread_t thread;
+} client_conn_t;
+
+
+/* Constants for quick validation. */
+static char *invalid_host_c;
+
+/* Global state variables. */
+static int running;
+static sockfd_t server_socket;
+static client_conn_t connections[MAX_CONNECTIONS];
 
 
 /* Gopher item operations. */
@@ -58,7 +82,10 @@ void gopher_item_print(gopher_item_t *item);
 
 /* Server operations. */
 sockfd_t server_start(int af, const char *addr, uint16_t port);
+void server_loop(int af, sockfd_t sockfd);
 void server_stop(void);
+void* server_process_request(void *data);
+const char* inet_addr_str(int af, void *addr, char *buf);
 
 /* Misc. */
 void const_init(void);
@@ -71,10 +98,8 @@ void const_free(void);
  * @param signum Signal number that was triggered.
  */
 void signal_handler(int signum) {
-	if (signum == SIGINT) {
-		printf("Got SIGINT\n");
+	if (signum == SIGINT)
 		server_stop();
-	}
 }
 
 /**
@@ -88,19 +113,30 @@ void signal_handler(int signum) {
 int main(int argc, char **argv) {
 	gopher_item_t *item;
 	int retval;
+	int i;
 	
 	/* Register signal handler. */
 	signal(SIGINT, signal_handler);
 	
-	/* Initialize constants and start server. */
-	retval = 0;
+	/* Initialize constants and state variables. */
 	const_init();
-	server_socket = server_start(AF_INET, "0.0.0.0", 70);
+	retval = 0;
+	running = 0;
+	for (i = 0; i < MAX_CONNECTIONS; i++) {
+		connections[i].sockfd = SOCKERR;
+		connections[i].status = 0;
+		connections[i].thread = NULL;
+	}
+	
+	/* Start server. */
+	server_socket = server_start(LISTEN_AF, LISTEN_ADDR, LISTEN_PORT);
 	if (server_socket == SOCKERR) {
 		retval = 1;
 		goto finish;
 	}
-	
+	server_loop(LISTEN_AF, server_socket);
+
+#if 0
 	/* Example of an unedited item. */
 	item = gopher_item_new();
 	gopher_item_print(item);
@@ -114,6 +150,7 @@ int main(int argc, char **argv) {
 	item->port = DEFAULT_PORT;
 	gopher_item_print(item);
 	gopher_item_free(item);
+#endif
 
 finish:	
 	/* Free resources and exit. */
@@ -198,33 +235,8 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 		return SOCKERR;
 	}
 	
-	/* TODO: Move to its own function. */
-	
-	/* Run server loop. */
 	printf("Server running on %s:%u\n", addr, port);
 	running = 1;
-	while (running) {
-		sockfd_t clientsock;
-		socklen_t socklen;
-		char selector[255];
-		int len;
-		
-		/* Accept the client connection. */
-		socklen = sizeof(sa);
-		clientsock = accept(sockfd, (struct sockaddr*)&sa, &socklen);
-		if (clientsock == SOCKERR) {
-			perror("ERROR: Failed to accept connection");
-			continue;
-		}
-		
-		/* Read the selector from client's request. */
-		len = read(clientsock, selector, 254);
-		selector[len] = '\0';
-		
-		printf("Got: '%s'\n", selector);
-		close(clientsock);
-	}
-	
 	return sockfd;
 }
 
@@ -232,10 +244,136 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
  * Stops the server immediately.
  */
 void server_stop(void) {
+	int i;
+
+	/* Stop the server. */
+	printf("Stopping the server...\n");
 	running = 0;
 	if ((server_socket != server_socket) && (close(server_socket) == SOCKERR))
 		perror("ERROR: Failed to close server socket");
 	server_socket = SOCKERR;
+	
+	/* Close all client connections. */
+	for (i = 0; i < MAX_CONNECTIONS; i++) {
+		if ((connections[i].status & CONN_INUSE) == 0)
+			continue;
+			
+		connections[i].status = 0;
+		if (connections[i].sockfd != SOCKERR)
+			close(connections[i].sockfd);
+		connections[i].sockfd = SOCKERR;
+		if (connections[i].thread != NULL)
+			pthread_join(connections[i].thread, NULL);
+		connections[i].thread = NULL;
+	}
+}
+
+/**
+ * Server listening loop.
+ *
+ * @param af     Socket address family.
+ * @param sockfd Socket in which the server is listening on.
+ */
+void server_loop(int af, sockfd_t sockfd) {
+	while (running) {
+		int i;
+
+		/* Clean up finished requests. */
+		for (i = 0; i < MAX_CONNECTIONS; i++) {
+			if (connections[i].status & CONN_FINISHED) {
+				if (connections[i].thread != NULL)
+					pthread_join(connections[i].thread, NULL);
+				connections[i].thread = NULL;
+				connections[i].status = 0;
+			}
+		}
+		
+		/* Check if we can accept new connections at the moment. */
+		for (i = 0; i < MAX_CONNECTIONS; i++) {
+			client_conn_t conn;
+			struct sockaddr_storage csa;
+			socklen_t socklen;
+			char addrstr[INET6_ADDRSTRLEN];
+
+			/* Ignore slots currently in use. */
+			conn = connections[i];
+			if (conn.status & CONN_INUSE)
+				continue;
+			
+			/* Accept the client connection. */
+			socklen = sizeof(csa);
+			conn.sockfd = accept(sockfd, (struct sockaddr*)&csa, &socklen);
+			if (conn.sockfd == SOCKERR) {
+				perror("ERROR: Failed to accept connection");
+				conn.status = 0;
+				break;
+			}
+			conn.status = CONN_INUSE;
+			
+			/* Get client address string and announce connection. */
+			if (inet_addr_str(af, &csa, addrstr) == NULL) {
+				perror("ERROR: Failed to get client address string");
+			} else {
+				printf("Client connected from %s\n", addrstr);
+			}
+			
+			/* Process the client's request. */
+			if (pthread_create(&conn.thread, NULL, server_process_request,
+					&conn)) {
+				printf("ERROR: Failed to create request processing thread\n");
+				close(conn.sockfd);
+				conn.status = 0;
+				break;
+			}
+			
+			break;
+		}
+	}
+}
+
+/**
+ * Processes a client connection.
+ *
+ * @warning This function is meant to be called from a thread creation routine.
+ *
+ * @param data Pointer to a client_conn_t structure.
+ */
+void* server_process_request(void *data) {
+	char selector[255];
+	size_t len;
+	client_conn_t *conn = (client_conn_t*)data;
+
+	/* Read the selector from client's request. */
+	len = read(conn->sockfd, selector, 254);
+	selector[len] = '\0';
+	printf("Got: '%s'\n", selector);
+	
+	/* Close the client connection and signal that we are finished here. */
+	close(conn->sockfd);
+	conn->sockfd = SOCKERR;
+	conn->status |= CONN_FINISHED;
+	
+	pthread_exit(NULL);
+	return NULL;
+}
+
+/**
+ * Gets a string representation of a network address structure.
+ *
+ * @param af   Socket address family.
+ * @param addr Network address structure.
+ * @param buf  Destination string, pre-allocated to hold an IPv6 address.
+ *
+ * @return Pointer to the destination string or NULL if an error occurred.
+ */
+const char* inet_addr_str(int af, void *addr, char *buf) {
+	if (af == AF_INET) {
+		return inet_ntop(af, &((struct sockaddr_in*)addr)->sin_addr, buf,
+			INET6_ADDRSTRLEN);
+	} else {
+		return inet_ntop(af, &((struct sockaddr_in6*)addr)->sin6_addr, buf,
+			INET6_ADDRSTRLEN);
+	}
 }
 
 /**
