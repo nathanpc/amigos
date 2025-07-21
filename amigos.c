@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #include <sys/types.h>
 #include <sys/time.h>
@@ -31,7 +32,7 @@
 #define DEFAULT_PORT   70
 #define INVALID_TYPE   '\0'
 #define INVALID_HOST   "null.host"
-#define INVALID_PORT   1
+#define INVALID_PORT   0
 #ifdef _WIN32
 	#define PATH_SEPARATOR '\\'
 #else
@@ -72,6 +73,7 @@ typedef struct client_conn {
 	uint8_t status;
 	sockfd_t sockfd;
 	pthread_t thread;
+	char *selector;
 } client_conn_t;
 
 
@@ -96,6 +98,15 @@ void server_loop(int af, sockfd_t sockfd);
 void server_stop(void);
 void* server_process_request(void *data);
 const char* inet_addr_str(int af, void *addr, char *buf);
+
+/* Client operations. */
+int client_send_file(const client_conn_t *conn, const char *path);
+int client_send_dir(const client_conn_t *conn, const char *path, int header);
+int client_send_item(const client_conn_t *conn, const gopher_item_t *item);
+int client_send_item_simple(const client_conn_t *conn, char type,
+							const char *msg);
+int client_send_info(const client_conn_t *conn, const char *msg);
+int client_send_error(const client_conn_t *conn, const char *msg);
 
 /* File system utilities. */
 int file_exists(const char *fname);
@@ -127,7 +138,6 @@ void signal_handler(int signum) {
  * @return Exit code.
  */
 int main(int argc, char **argv) {
-	gopher_item_t *item;
 	int retval;
 	int i;
 	
@@ -155,6 +165,7 @@ int main(int argc, char **argv) {
 		connections[i].sockfd = SOCKERR;
 		connections[i].status = 0;
 		connections[i].thread = NULL;
+		connections[i].selector = NULL;
 	}
 	
 	/* Start server. */
@@ -163,23 +174,9 @@ int main(int argc, char **argv) {
 		retval = 1;
 		goto finish;
 	}
-	server_loop(LISTEN_AF, server_socket);
-
-#if 0
-	/* Example of an unedited item. */
-	item = gopher_item_new();
-	gopher_item_print(item);
-	printf("\n");
 	
-	/* Example of a fully populated item. */
-	item->type = '1';
-	item->name = strdup("An example item");
-	item->selector = strdup("/amigos");
-	item->hostname = strdup("nathancampos.me");
-	item->port = DEFAULT_PORT;
-	gopher_item_print(item);
-	gopher_item_free(item);
-#endif
+	/* Run server listen loop. */
+	server_loop(LISTEN_AF, server_socket);
 
 finish:	
 	/* Free resources and exit. */
@@ -323,6 +320,7 @@ void server_loop(int af, sockfd_t sockfd) {
 				if (connections[i].thread != NULL)
 					pthread_join(connections[i].thread, NULL);
 				connections[i].thread = NULL;
+				connections[i].selector = NULL;
 				connections[i].status = 0;
 			}
 		}
@@ -386,6 +384,7 @@ void* server_process_request(void *data) {
 	
 	/* Initialize values. */
 	conn = (client_conn_t*)data;
+	conn->selector = selector;
 	fpath = NULL;
 
 	/* Read the selector from client's request. */
@@ -416,38 +415,28 @@ void* server_process_request(void *data) {
 	printf("Client requested selector '%s'\n", selector);
 	
 	/* Build local file request path from selector. */
-	if (path_concat(&fpath, docroot, selector, NULL) == 0) {
+	if (*selector == '\0') {
+		fpath = strdup(docroot);
+	} else if (path_concat(&fpath, docroot, selector, NULL) == 0) {
 		printf("ERROR: Failed to build request path for selector %s\n",
 			selector);
 		goto close_conn;
 	}
 	
-	/* Try to get a file to reply to client. */
-	if (file_exists(fpath)) {
-		FILE *fh;
-		size_t flen;
-		uint8_t buf[256];
-		
-		/* Open file for reading. */
-		fh = fopen(fpath, "rb");
-		if (fh == NULL) {
-			printf("ERROR: Failed to open file %s for request selector '%s'\n",
-				fpath, selector);
+	/* Reply to client. */
+	if (dir_exists(fpath)) {
+		/* Selector matches a directory. */
+		/* TODO: Check if there's a gophermap file in directory. */
+		if (!client_send_dir(conn, fpath, 1))
 			goto close_conn;
-		}
-		
-		/* Pipe file contents straight to socket. */
-		while ((flen = fread(buf, sizeof(char), 256, fh)) > 0) {
-			if (send(conn->sockfd, buf, flen, 0) < 0) {
-				perror("ERROR: Failed to pipe contents of file to socket");
-				break;
-			}
-		}
-		
-		/* Close file handle. */
-		fclose(fh);
+	} else if (file_exists(fpath)) {
+		/* Selector matches a file. */
+		if (!client_send_file(conn, fpath))
+			goto close_conn;
 	} else {
-		/* TODO: Send selector not found error. */
+		/* Looks like the client requested a path that doesn't exist. */
+		if (!client_send_error(conn, "Selector not found."))
+			goto close_conn;
 	}
 
 close_conn:
@@ -483,6 +472,226 @@ const char* inet_addr_str(int af, void *addr, char *buf) {
 		return inet_ntop(af, &((struct sockaddr_in6*)addr)->sin6_addr, buf,
 			INET6_ADDRSTRLEN);
 	}
+}
+
+/**
+ * =============================================================================
+ * === Client Replies ==========================================================
+ * =============================================================================
+ */
+
+/**
+ * Replies to the client with the contents of a file.
+ *
+ * @param conn Client connection object.
+ * @param path Path to the file to send to the client.
+ *
+ * @return TRUE if the operation was successful, FALSE otherwise.
+ */
+int client_send_file(const client_conn_t *conn, const char *path) {
+	FILE *fh;
+	size_t flen;
+	uint8_t buf[256];
+	int ret;
+	
+	/* Open file for reading. */
+	ret = 1;
+	fh = fopen(path, "rb");
+	if (fh == NULL) {
+		printf("ERROR: Failed to open file %s for request selector '%s'\n",
+			path, conn->selector);
+		return 0;
+	}
+	
+	/* Pipe file contents straight to socket. */
+	while ((flen = fread(buf, sizeof(char), 256, fh)) > 0) {
+		if (send(conn->sockfd, buf, flen, 0) < 0) {
+			perror("ERROR: Failed to pipe contents of file to socket");
+			ret = 0;
+			break;
+		}
+	}
+	
+	/* Close file handle. */
+	fclose(fh);
+	return ret;
+}
+
+/**
+ * Replies to the client with a directory listing.
+ *
+ * @param conn   Client connection object.
+ * @param path   Path to the directory to list to the client.
+ * @param header Print out a small header giving context to the listing?
+ *
+ * @return TRUE if the operation was successful, FALSE otherwise.
+ */
+int client_send_dir(const client_conn_t *conn, const char *path, int header) {
+	gopher_item_t *item;
+	struct dirent *dirent;
+	DIR *dh;
+	int ret;
+	
+	/* Open directory. */
+	ret = 1;
+	dh = opendir(path);
+	if (dh == NULL) {
+		perror("ERROR: Failed to open directory for listing");
+		return 0;
+	}
+	
+	/* Print out a header. */
+	if (header) {
+		char msg[256];
+		snprintf(msg, 256, "[%s]:", conn->selector);
+		ret = client_send_info(conn, msg);
+		ret = client_send_info(conn, "");
+	}
+	
+	/* Set common Gopher item parameters. */
+	item = gopher_item_new();
+	item->hostname = strdup(DEFAULT_HOSTNAME);
+	item->port = DEFAULT_PORT;
+	
+	/* Read directory contents. */
+	while ((dirent = readdir(dh)) != NULL) {
+		/* Skip hidden and special files. */
+		if (*dirent->d_name == '.')
+			continue;
+		
+		/* Skip gophermap files. */
+		if (*dirent->d_name == 'g') {
+			if (strcmp(dirent->d_name, "gophermap") == 0)
+				continue;
+		}
+		
+		/* Build up Gopher item entry. */
+		item->type = dirent->d_type == DT_DIR ? '1' : '0';
+		item->name = strdup(dirent->d_name);
+		item->selector = dirent->d_name;
+		
+		/* Send the item to the client. */
+		if (!client_send_item(conn, item))
+			ret = 0;
+		
+		/* Free used resources. */
+		free(item->name);
+		item->name = NULL;
+		item->selector = NULL;
+	}
+	
+	/* Free up resources. */
+	closedir(dh);
+	gopher_item_free(item);
+	item = NULL;
+
+	return ret;
+}
+
+/**
+ * Sends an entry item to the client.
+ *
+ * @param conn Client connection object.
+ * @param item Gopher item object to be sent.
+ *
+ * @return TRUE if the operation was successful, FALSE otherwise.
+ */
+int client_send_item(const client_conn_t *conn, const gopher_item_t *item) {
+	char buf[256];
+	size_t len;
+	char *selector;
+	
+	/* Build up the selector string. */
+	selector = NULL;
+	if ((*conn->selector != '\0') && (item->selector != NULL) &&
+			(item->selector[0] != '/')) {
+		if (path_concat(&selector, conn->selector, item->selector, NULL) == 0) {
+			printf("ERROR: Failed to concatenate base selector '%s' with "
+				"relative selector '%s'\n", conn->selector, item->selector);
+			return 0;
+		}
+	}
+	
+	/* Create entry line string for sending to client. */
+	len = snprintf(buf, 256, "%c%s\t%s\t%s\t%u\r\n", item->type,
+		item->name == NULL ? "" : item->name,
+		selector == NULL ? item->selector ? item->selector : "" : selector,
+		item->hostname == NULL ? DEFAULT_HOSTNAME : item->hostname,
+		item->port);
+	
+	/* Free up used selector string. */
+	if (selector != NULL)
+		free(selector);
+	selector = NULL;
+	
+	/* Check if the string buffer was big enough. */
+	if (len >= 256) {
+		printf("ERROR: Entry line too long (>%lu chars) for item '%s'.\n",
+			sizeof(buf), item->name);
+		return 0;
+	}
+	
+	/* Send out the entry line. */
+	if (send(conn->sockfd, buf, len, 0) < 0) {
+		perror("ERROR: Failed to send entry item line");
+		return 0;
+	}
+
+	return 1;
+}
+
+/**
+ * Sends a simple message item (no hostname or port) to the client.
+ *
+ * @param conn Client connection object.
+ * @param type Type of item.
+ * @param msg  Message to be sent to client.
+ *
+ * @return TRUE if the operation was successful, FALSE otherwise.
+ */
+int client_send_item_simple(const client_conn_t *conn, char type,
+							const char *msg) {
+	int ret;
+
+	/* Populate item object. */
+	gopher_item_t *item = gopher_item_new();
+	item->type = type;
+	item->name = (char*)msg;
+	item->hostname = invalid_host_c;
+	item->port = INVALID_PORT;
+	
+	/* Send item to client. */
+	ret = client_send_item(conn, item);
+	
+	/* Free up resources. */
+	item->name = NULL;
+	gopher_item_free(item);
+	
+	return ret;
+}
+
+/**
+ * Sends an info message item to the client.
+ *
+ * @param conn Client connection object.
+ * @param msg  Message to be sent to client.
+ *
+ * @return TRUE if the operation was successful, FALSE otherwise.
+ */
+int client_send_info(const client_conn_t *conn, const char *msg) {
+	return client_send_item_simple(conn, 'i', msg);
+}
+
+/**
+ * Sends an error message item to the client.
+ *
+ * @param conn Client connection object.
+ * @param msg  Message to be sent to client.
+ *
+ * @return TRUE if the operation was successful, FALSE otherwise.
+ */
+int client_send_error(const client_conn_t *conn, const char *msg) {
+	return client_send_item_simple(conn, '3', msg);
 }
 
 /**
