@@ -90,6 +90,7 @@ static client_conn_t connections[MAX_CONNECTIONS];
 /* Gopher item operations. */
 gopher_item_t* gopher_item_new(void);
 void gopher_item_free(gopher_item_t *item);
+gopher_item_t* gopher_item_parse(const char *line);
 void gopher_item_print(gopher_item_t *item);
 
 /* Server operations. */
@@ -102,6 +103,7 @@ const char* inet_addr_str(int af, void *addr, char *buf);
 /* Client operations. */
 int client_send_file(const client_conn_t *conn, const char *path);
 int client_send_dir(const client_conn_t *conn, const char *path, int header);
+int client_send_gophermap(const client_conn_t *conn, const char *path);
 int client_send_item(const client_conn_t *conn, const gopher_item_t *item);
 int client_send_item_simple(const client_conn_t *conn, char type,
 							const char *msg);
@@ -427,9 +429,21 @@ void* server_process_request(void *data) {
 	/* Reply to client. */
 	if (dir_exists(fpath)) {
 		/* Selector matches a directory. */
-		/* TODO: Check if there's a gophermap file in directory. */
-		if (!client_send_dir(conn, fpath, 1))
+		char *mapfile;
+		
+		/* Check if there's a gophermap file in the directory. */
+		if (!path_concat(&mapfile, fpath, "gophermap", NULL))
 			goto close_conn;
+		if (file_exists(mapfile)) {
+			/* Send gophermap. */
+			if (!client_send_gophermap(conn, mapfile))
+				goto close_conn;
+		} else {
+			/* List the contents of the directory. */
+			if (!client_send_dir(conn, fpath, 1))
+				goto close_conn;
+		}
+
 		send(conn->sockfd, ".", 1, 0);
 	} else if (file_exists(fpath)) {
 		/* Selector matches a file. */
@@ -596,6 +610,74 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 }
 
 /**
+ * Replies to the client with a gophermap.
+ *
+ * @param conn Client connection object.
+ * @param path Path to the gophermap file.
+ *
+ * @return TRUE if the operation was successful, FALSE otherwise.
+ */
+int client_send_gophermap(const client_conn_t *conn, const char *path) {
+	FILE *fh;
+	char buf[256];
+	unsigned int linenum;
+	int ret;
+	
+	/* Open file for reading. */
+	ret = 1;
+	fh = fopen(path, "r");
+	if (fh == NULL) {
+		printf("ERROR: Failed to open gophermap for request selector '%s'\n",
+			conn->selector);
+		return 0;
+	}
+	
+	/* Read contents line by line. */
+	linenum = 0;
+	while (fgets(buf, 256, fh) != NULL) {
+		gopher_item_t *item;
+		char *tmp;
+		int tabs;
+		
+		/* Strip newline and count tabs. */
+		linenum++;
+		tmp = buf;
+		tabs = 0;
+		while ((*tmp != '\r') && (*tmp != '\n') && (*tmp != '\0')) {
+			if (*tmp == '\t')
+				tabs++;
+			tmp++;
+		}
+		*tmp = '\0';
+		
+		/* No tabs means it's an info line. */
+		if (tabs == 0) {
+			client_send_info(conn, buf);
+			continue;
+		}
+		
+		/* Parse item line. */
+		item = gopher_item_parse(buf);
+		if (item == NULL) {
+			printf("ERROR: Failed to parse line %u of %s\n", linenum, path);
+			client_send_error(conn, "Failed to parse this line of gophermap");
+			ret = 0;
+			continue;
+		}
+		
+		/* Send item to client. */
+		if (!client_send_item(conn, item))
+			ret = 0;
+		gopher_item_free(item);
+		item = NULL;
+	}
+	
+	/* Close file handle. */
+	fclose(fh);
+	return ret;
+}
+
+/**
  * Sends an entry item to the client.
  *
  * @param conn Client connection object.
@@ -750,6 +832,81 @@ void gopher_item_free(gopher_item_t *item) {
 	if ((item->hostname != invalid_host_c) && (item->hostname != NULL))
 		free(item->hostname);
 	free(item);
+}
+
+/**
+ * Parses a Gopher item object from a gophermap line.
+ *
+ * @warning This function allocates memory that must be free'd using a special
+ *          function.
+ *
+ * @return Allocated item object or NULL if an error occurred.
+ *
+ * @see gopher_item_free
+ */
+gopher_item_t* gopher_item_parse(const char *line) {
+	gopher_item_t *item;
+	const char *tmp;
+	char *cbuf;
+	char buf[256];
+	
+	/* Try to allocate brand new item object. */
+	item = gopher_item_new();
+	if (item == NULL)
+		return NULL;
+
+	/* Populate it with some defaults. */
+	item->hostname = strdup(DEFAULT_HOSTNAME);
+	item->port = DEFAULT_PORT;
+	
+	/* Get item type. */
+	tmp = line;
+	item->type = *tmp++;
+	
+	/* Get item name. */
+	cbuf = buf;
+	while (*tmp != '\t') {
+		*cbuf = *tmp++;
+		cbuf++;
+	}
+	*cbuf = '\0';
+	item->name = strdup(buf);
+	tmp++;
+	
+	/* Get item selector. */
+	cbuf = buf;
+	while ((*tmp != '\t') && (*tmp != '\0')) {
+		*cbuf = *tmp++;
+		cbuf++;
+	}
+	*cbuf = '\0';
+	item->selector = strdup(buf);
+	if (*tmp == '\0')
+		return item;
+	tmp++;
+	
+	/* Get item hostname. */
+	cbuf = buf;
+	while ((*tmp != '\t') && (*tmp != '\0')) {
+		*cbuf = *tmp++;
+		cbuf++;
+	}
+	*cbuf = '\0';
+	item->hostname = strdup(buf);
+	if (*tmp == '\0')
+		return item;
+	tmp++;
+	
+	/* Get item port. */
+	cbuf = buf;
+	while (*tmp != '\0') {
+		*cbuf = *tmp++;
+		cbuf++;
+	}
+	*cbuf = '\0';
+	item->port = (uint16_t)atoi(buf);
+
+	return item;
 }
 
 /**
