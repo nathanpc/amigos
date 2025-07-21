@@ -15,6 +15,7 @@
 
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
@@ -179,11 +180,13 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 	sockfd_t sockfd;
 	socklen_t addrlen;
 	int flag;
+	struct timeval tv;
 	
-	/* Zero out the address structure and cache its size. */
+	/* Zero out address structure, cache its size, and fill timeout value. */
 	memset(&sa, '\0', sizeof(sa));
 	addrlen = af == AF_INET ? sizeof(struct sockaddr_in) :
 		sizeof(struct sockaddr_in6);
+	tv.tv_sec = RECV_TIMEOUT;
 	
 	/* Ensure that we don't have a server already running. */
 	if (running != 0) {
@@ -224,6 +227,14 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &flag,
 			sizeof(flag)) == SOCKERR) {
 		perror("ERROR: Failed to set socket address reuse");
+		close(sockfd);
+		return SOCKERR;
+	}
+	
+	/* Set a receive timeout so that we don't block indefinitely. */
+	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv,
+			sizeof(tv)) == SOCKERR) {
+		perror("ERROR: Failed to set socket receive timeout");
 		close(sockfd);
 		return SOCKERR;
 	}
