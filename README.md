@@ -1,8 +1,11 @@
 # amigos
 
-A super tiny, ultra portable, single file, Gopher server written in ANSI C.
+A super tiny, ultra portable, single file, standalone Gopher server written in
+ANSI C. Also known as **a** **mi**cro **G**opher **s**erver.
 
-**A** **mi**cro **G**opher **s**erver
+This server implementation strictly follows [RFC 1436](https://www.rfc-editor.org/rfc/rfc1436),
+with the exception of the `i` type that's commonly used in modern Gopher
+implementations.
 
 ## License
 
