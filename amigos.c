@@ -34,7 +34,7 @@
 #define RECV_TIMEOUT     3
 
 #define DEFAULT_HOSTNAME "localhost"
-#define DEFAULT_PORT     70
+#define DEFAULT_PORT     LISTEN_PORT
 
 #define LISTEN_BACKLOG   5
 #define INVALID_TYPE     '\0'
@@ -153,23 +153,23 @@ void signal_handler(int signum) {
 int main(int argc, char **argv) {
 	int retval;
 	int i;
-	
+
 	/* Check if we have a document root folder. */
 	if (argc < 2) {
 		printf("usage: %s docroot\n", argv[0]);
 		return 1;
 	}
 	docroot = argv[1];
-	
+
 	/* Check if document root folder actually exists. */
 	if (!dir_exists(docroot)) {
 		printf("ERROR: Document root path '%s' doesn't exist.\n", docroot);
 		return 1;
 	}
-	
+
 	/* Register signal handler. */
 	signal(SIGINT, signal_handler);
-	
+
 	/* Initialize constants and state variables. */
 	const_init();
 	retval = 0;
@@ -180,18 +180,18 @@ int main(int argc, char **argv) {
 		connections[i].thread = NULL;
 		connections[i].selector = NULL;
 	}
-	
+
 	/* Start server. */
 	server_socket = server_start(LISTEN_AF, LISTEN_ADDR, LISTEN_PORT);
 	if (server_socket == SOCKERR) {
 		retval = 1;
 		goto finish;
 	}
-	
+
 	/* Run server listen loop. */
 	server_loop(LISTEN_AF, server_socket);
 
-finish:	
+finish:
 	/* Free resources and exit. */
 	server_stop();
 	const_free();
@@ -219,25 +219,25 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 	socklen_t addrlen;
 	int flag;
 	struct timeval tv;
-	
+
 	/* Zero out address structure and cache its size. */
 	memset(&sa, '\0', sizeof(sa));
 	addrlen = af == AF_INET ? sizeof(struct sockaddr_in) :
 		sizeof(struct sockaddr_in6);
-	
+
 	/* Ensure that we don't have a server already running. */
 	if (running != 0) {
 		printf("ERROR: Tried to start a server while already running.\n");
 		return SOCKERR;
 	}
-	
+
 	/* Get a socket file descriptor. */
 	sockfd = socket(af == AF_INET ? PF_INET : PF_INET6, SOCK_STREAM, 0);
 	if (sockfd == SOCKERR) {
 		perror("ERROR: Failed to get a socket file descriptor");
 		return SOCKERR;
 	}
-	
+
 	/* Populate socket address information. */
 	if (af == AF_INET) {
 		struct sockaddr_in *inaddr = (struct sockaddr_in*)&sa;
@@ -251,7 +251,7 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 		printf("ERROR: IPv6 not yet implemented.\n");
 		return SOCKERR;
 	}
-	
+
 	/* Ensure we don't have to worry about address already in use errors. */
 	flag = 1;
 	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &flag,
@@ -260,7 +260,7 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 		close(sockfd);
 		return SOCKERR;
 	}
-	
+
 	/* Set a receive timeout so that we don't block indefinitely. */
 	tv.tv_sec = RECV_TIMEOUT;
 	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv,
@@ -269,21 +269,21 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 		close(sockfd);
 		return SOCKERR;
 	}
-	
+
 	/* Bind address to socket. */
 	if (bind(sockfd, (struct sockaddr*)&sa, addrlen) == SOCKERR) {
 		perror("ERROR: Failed binding to socket");
 		close(sockfd);
 		return SOCKERR;
 	}
-	
+
 	/* Start listening on our desired socket. */
 	if (listen(sockfd, LISTEN_BACKLOG) == SOCKERR) {
 		perror("ERROR: Failed to listen on socket");
 		close(sockfd);
 		return SOCKERR;
 	}
-	
+
 	printf("Server running on %s:%u\n", addr, port);
 	running = 1;
 	return sockfd;
@@ -298,15 +298,15 @@ void server_stop(void) {
 	/* Stop the server. */
 	printf("Stopping the server...\n");
 	running = 0;
-	if ((server_socket != server_socket) && (close(server_socket) == SOCKERR))
+	if ((server_socket != SOCKERR) && (close(server_socket) == SOCKERR))
 		perror("ERROR: Failed to close server socket");
 	server_socket = SOCKERR;
-	
+
 	/* Close all client connections. */
 	for (i = 0; i < MAX_CONNECTIONS; i++) {
 		if ((connections[i].status & CONN_INUSE) == 0)
 			continue;
-			
+
 		connections[i].status = 0;
 		if (connections[i].sockfd != SOCKERR)
 			close(connections[i].sockfd);
@@ -337,7 +337,7 @@ void server_loop(int af, sockfd_t sockfd) {
 				connections[i].status = 0;
 			}
 		}
-		
+
 		/* Check if we can accept new connections at the moment. */
 		for (i = 0; i < MAX_CONNECTIONS; i++) {
 			client_conn_t *conn;
@@ -349,7 +349,7 @@ void server_loop(int af, sockfd_t sockfd) {
 			conn = &connections[i];
 			if (conn->status & CONN_INUSE)
 				continue;
-			
+
 			/* Accept the client connection. */
 			socklen = sizeof(csa);
 			conn->sockfd = accept(sockfd, (struct sockaddr*)&csa, &socklen);
@@ -359,14 +359,14 @@ void server_loop(int af, sockfd_t sockfd) {
 				break;
 			}
 			conn->status = CONN_INUSE;
-			
+
 			/* Get client address string and announce connection. */
 			if (inet_addr_str(af, &csa, addrstr) == NULL) {
 				perror("ERROR: Failed to get client address string");
 			} else {
 				printf("Client connected from %s\n", addrstr);
 			}
-			
+
 			/* Process the client's request. */
 			if (pthread_create(&conn->thread, NULL, server_process_request,
 					conn)) {
@@ -375,7 +375,7 @@ void server_loop(int af, sockfd_t sockfd) {
 				conn->status = 0;
 				break;
 			}
-			
+
 			break;
 		}
 	}
@@ -394,7 +394,7 @@ void* server_process_request(void *data) {
 	char *fpath;
 	ssize_t len;
 	int i;
-	
+
 	/* Initialize values. */
 	conn = (client_conn_t*)data;
 	conn->selector = selector;
@@ -407,14 +407,14 @@ void* server_process_request(void *data) {
 		goto close_conn;
 	}
 	selector[len] = '\0';
-	
+
 	/* Ensure the request wasn't too long. */
 	if (len >= 255) {
 		printf("ERROR: Selector unusually long, closing connection.\n");
 		client_send_error(conn, "Selector string longer than 255 characters");
 		goto close_conn;
 	}
-	
+
 	/* Terminate selector string before CRLF. */
 	for (i = 0; i < len; i++) {
 		if ((selector[i] == '\t') || (selector[i] == '\r') ||
@@ -423,11 +423,11 @@ void* server_process_request(void *data) {
 			break;
 		}
 	}
-	
+
 	/* Sanitize selector before using it. */
 	path_sanitize(selector);
 	printf("Client requested selector '%s'\n", selector);
-	
+
 	/* Build local file request path from selector. */
 	if (*selector == '\0') {
 		fpath = strdup(docroot);
@@ -436,12 +436,12 @@ void* server_process_request(void *data) {
 			selector);
 		goto close_conn;
 	}
-	
+
 	/* Reply to client. */
 	if (dir_exists(fpath)) {
 		/* Selector matches a directory. */
 		char *mapfile;
-		
+
 		/* Check if there's a gophermap file in the directory. */
 		if (!path_concat(&mapfile, fpath, "gophermap", NULL))
 			goto close_conn;
@@ -478,7 +478,7 @@ close_conn:
 		close(conn->sockfd);
 	conn->sockfd = SOCKERR;
 	conn->status |= CONN_FINISHED;
-	
+
 	pthread_exit(NULL);
 	return NULL;
 }
@@ -521,7 +521,7 @@ int client_send_file(const client_conn_t *conn, const char *path) {
 	size_t flen;
 	uint8_t buf[256];
 	int ret;
-	
+
 	/* Open file for reading. */
 	ret = 1;
 	fh = fopen(path, "rb");
@@ -530,7 +530,7 @@ int client_send_file(const client_conn_t *conn, const char *path) {
 			path, conn->selector);
 		return 0;
 	}
-	
+
 	/* Pipe file contents straight to socket. */
 	while ((flen = fread(buf, sizeof(char), 256, fh)) > 0) {
 		if (send(conn->sockfd, buf, flen, 0) < 0) {
@@ -539,7 +539,7 @@ int client_send_file(const client_conn_t *conn, const char *path) {
 			break;
 		}
 	}
-	
+
 	/* Close file handle. */
 	fclose(fh);
 	return ret;
@@ -560,7 +560,7 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 	char name[71];
 	DIR *dh;
 	int ret;
-	
+
 	/* Open directory. */
 	ret = 1;
 	dh = opendir(path);
@@ -568,7 +568,7 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 		perror("ERROR: Failed to open directory for listing");
 		return 0;
 	}
-	
+
 	/* Print out a header. */
 	if (header) {
 		char msg[256];
@@ -576,40 +576,40 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 		ret = client_send_info(conn, msg);
 		ret = client_send_info(conn, "");
 	}
-	
+
 	/* Set common Gopher item parameters. */
 	item = gopher_item_new();
 	item->hostname = strdup(DEFAULT_HOSTNAME);
 	item->port = DEFAULT_PORT;
-	
+
 	/* Read directory contents. */
 	while ((dirent = readdir(dh)) != NULL) {
 		/* Skip hidden and special files. */
 		if (*dirent->d_name == '.')
 			continue;
-		
+
 		/* Skip gophermap files. */
 		if (*dirent->d_name == 'g') {
 			if (strcmp(dirent->d_name, "gophermap") == 0)
 				continue;
 		}
-		
+
 		/* Build up Gopher item entry. */
 		item->type = dirent->d_type == DT_DIR ? '1' : '0';
 		snprintf(name, 71, "%s%c", dirent->d_name,
 			(dirent->d_type == DT_DIR ? '/' : ' '));
 		item->name = name;
 		item->selector = dirent->d_name;
-		
+
 		/* Send the item to the client. */
 		if (!client_send_item(conn, item))
 			ret = 0;
-		
+
 		/* Free used resources. */
 		item->name = NULL;
 		item->selector = NULL;
 	}
-	
+
 	/* Free up resources. */
 	closedir(dh);
 	item->name = NULL;
@@ -633,7 +633,7 @@ int client_send_gophermap(const client_conn_t *conn, const char *path) {
 	char buf[256];
 	unsigned int linenum;
 	int ret;
-	
+
 	/* Open file for reading. */
 	ret = 1;
 	fh = fopen(path, "r");
@@ -642,14 +642,14 @@ int client_send_gophermap(const client_conn_t *conn, const char *path) {
 			conn->selector);
 		return 0;
 	}
-	
+
 	/* Read contents line by line. */
 	linenum = 0;
 	while (fgets(buf, 256, fh) != NULL) {
 		gopher_item_t *item;
 		char *tmp;
 		int tabs;
-		
+
 		/* Strip newline and count tabs. */
 		linenum++;
 		tmp = buf;
@@ -660,7 +660,7 @@ int client_send_gophermap(const client_conn_t *conn, const char *path) {
 			tmp++;
 		}
 		*tmp = '\0';
-		
+
 		/* No tabs means it's an info line, or maybe a special directive. */
 		if (tabs == 0) {
 			/* Check if it may be a special directive. */
@@ -676,12 +676,12 @@ int client_send_gophermap(const client_conn_t *conn, const char *path) {
 				dir = NULL;
 				continue;
 			}
-			
+
 			/* Just a regular info line. */
 			client_send_info(conn, buf);
 			continue;
 		}
-		
+
 		/* Parse item line. */
 		item = gopher_item_parse(buf);
 		if (item == NULL) {
@@ -690,14 +690,14 @@ int client_send_gophermap(const client_conn_t *conn, const char *path) {
 			ret = 0;
 			continue;
 		}
-		
+
 		/* Send item to client. */
 		if (!client_send_item(conn, item))
 			ret = 0;
 		gopher_item_free(item);
 		item = NULL;
 	}
-	
+
 	/* Close file handle. */
 	fclose(fh);
 	return ret;
@@ -715,7 +715,7 @@ int client_send_item(const client_conn_t *conn, const gopher_item_t *item) {
 	char buf[256];
 	size_t len;
 	char *selector;
-	
+
 	/* Build up the selector string. */
 	selector = NULL;
 	if ((*conn->selector != '\0') && (item->selector != NULL) &&
@@ -726,26 +726,26 @@ int client_send_item(const client_conn_t *conn, const gopher_item_t *item) {
 			return 0;
 		}
 	}
-	
+
 	/* Create entry line string for sending to client. */
 	len = snprintf(buf, 256, "%c%s\t%s\t%s\t%u\r\n", item->type,
 		item->name == NULL ? "" : item->name,
 		selector == NULL ? item->selector ? item->selector : "" : selector,
 		item->hostname == NULL ? DEFAULT_HOSTNAME : item->hostname,
 		item->port);
-	
+
 	/* Free up used selector string. */
 	if (selector != NULL)
 		free(selector);
 	selector = NULL;
-	
+
 	/* Check if the string buffer was big enough. */
 	if (len >= 256) {
 		printf("ERROR: Entry line too long (>%lu chars) for item '%s'.\n",
 			sizeof(buf), item->name);
 		return 0;
 	}
-	
+
 	/* Send out the entry line. */
 	if (send(conn->sockfd, buf, len, 0) < 0) {
 		perror("ERROR: Failed to send entry item line");
@@ -774,14 +774,14 @@ int client_send_item_simple(const client_conn_t *conn, char type,
 	item->name = (char*)msg;
 	item->hostname = invalid_host_c;
 	item->port = INVALID_PORT;
-	
+
 	/* Send item to client. */
 	ret = client_send_item(conn, item);
-	
+
 	/* Free up resources. */
 	item->name = NULL;
 	gopher_item_free(item);
-	
+
 	return ret;
 }
 
@@ -827,12 +827,12 @@ int client_send_error(const client_conn_t *conn, const char *msg) {
  */
 gopher_item_t* gopher_item_new(void) {
 	gopher_item_t *item;
-	
+
 	/* Try to allocate our item object. */
 	item = (gopher_item_t*)malloc(sizeof(gopher_item_t));
 	if (item == NULL)
 		return NULL;
-	
+
 	/* Populate it with sane defaults. */
 	item->type = INVALID_TYPE;
 	item->_pad = INVALID_TYPE;
@@ -875,7 +875,7 @@ gopher_item_t* gopher_item_parse(const char *line) {
 	const char *tmp;
 	char *cbuf;
 	char buf[256];
-	
+
 	/* Try to allocate brand new item object. */
 	item = gopher_item_new();
 	if (item == NULL)
@@ -884,11 +884,11 @@ gopher_item_t* gopher_item_parse(const char *line) {
 	/* Populate it with some defaults. */
 	item->hostname = strdup(DEFAULT_HOSTNAME);
 	item->port = DEFAULT_PORT;
-	
+
 	/* Get item type. */
 	tmp = line;
 	item->type = *tmp++;
-	
+
 	/* Get item name. */
 	cbuf = buf;
 	while (*tmp != '\t') {
@@ -898,7 +898,7 @@ gopher_item_t* gopher_item_parse(const char *line) {
 	*cbuf = '\0';
 	item->name = strdup(buf);
 	tmp++;
-	
+
 	/* Get item selector. */
 	cbuf = buf;
 	while ((*tmp != '\t') && (*tmp != '\0')) {
@@ -910,7 +910,7 @@ gopher_item_t* gopher_item_parse(const char *line) {
 	if (*tmp == '\0')
 		return item;
 	tmp++;
-	
+
 	/* Get item hostname. */
 	cbuf = buf;
 	while ((*tmp != '\t') && (*tmp != '\0')) {
@@ -922,7 +922,7 @@ gopher_item_t* gopher_item_parse(const char *line) {
 	if (*tmp == '\0')
 		return item;
 	tmp++;
-	
+
 	/* Get item port. */
 	cbuf = buf;
 	while (*tmp != '\0') {
@@ -1049,7 +1049,7 @@ int path_sanitize(char *path) {
 			ret = 1;
 			break;
 		}
-	
+
 		/* Normalize path separators. */
 #ifdef _WIN32
 		if (*buf == '/') {
@@ -1060,7 +1060,7 @@ int path_sanitize(char *path) {
 
 		buf++;
 	}
-	
+
 	return ret;
 }
 
