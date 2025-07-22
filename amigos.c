@@ -193,7 +193,8 @@ int main(int argc, char **argv) {
 
 finish:
 	/* Free resources and exit. */
-	server_stop();
+	if (running)
+		server_stop();
 	const_free();
 	return retval;
 }
@@ -354,7 +355,8 @@ void server_loop(int af, sockfd_t sockfd) {
 			socklen = sizeof(csa);
 			conn->sockfd = accept(sockfd, (struct sockaddr*)&csa, &socklen);
 			if (conn->sockfd == SOCKERR) {
-				perror("ERROR: Failed to accept connection");
+				if (running)
+					perror("ERROR: Failed to accept connection");
 				conn->status = 0;
 				break;
 			}
