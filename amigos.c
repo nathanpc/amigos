@@ -25,19 +25,30 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 
-#include "config.h"
 
-/* Some common definitions. */
-#define LISTEN_BACKLOG 5
-#define DEFAULT_PORT   70
-#define INVALID_TYPE   '\0'
-#define INVALID_HOST   "null.host"
-#define INVALID_PORT   0
+/* Some common definitions and defaults. */
+#define LISTEN_AF        AF_INET
+#define LISTEN_ADDR      "0.0.0.0"
+#define LISTEN_PORT      70
+#define MAX_CONNECTIONS  10
+#define RECV_TIMEOUT     3
+
+#define DEFAULT_HOSTNAME "localhost"
+#define DEFAULT_PORT     70
+
+#define LISTEN_BACKLOG   5
+#define INVALID_TYPE     '\0'
+#define INVALID_HOST     "null.host"
+#define INVALID_PORT     0
+
 #ifdef _WIN32
 	#define PATH_SEPARATOR '\\'
 #else
 	#define PATH_SEPARATOR '/'
 #endif /* _WIN32 */
+
+/* Include configuration. */
+#include "config.h"
 
 /* Socket abstractions. */
 typedef int sockfd_t;
