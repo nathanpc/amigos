@@ -650,8 +650,23 @@ int client_send_gophermap(const client_conn_t *conn, const char *path) {
 		}
 		*tmp = '\0';
 		
-		/* No tabs means it's an info line. */
+		/* No tabs means it's an info line, or maybe a special directive. */
 		if (tabs == 0) {
+			/* Check if it may be a special directive. */
+			if (strcmp(buf, ".") == 0) {
+				/* Halt file processing. */
+				break;
+			} else if (strcmp(buf, "*") == 0) {
+				/* Render a directory listing. */
+				char *dir = strdup(path);
+				dir[strlen(path) - 10] = '\0';
+				ret = client_send_dir(conn, dir, 0);
+				free(dir);
+				dir = NULL;
+				continue;
+			}
+			
+			/* Just a regular info line. */
 			client_send_info(conn, buf);
 			continue;
 		}
