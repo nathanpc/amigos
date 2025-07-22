@@ -7,6 +7,26 @@ This server implementation strictly follows [RFC 1436](https://www.rfc-editor.or
 with the exception of the `i` type that's commonly used in modern Gopher
 implementations.
 
+## Compiling and Configuration
+
+Configuration of this software is done via a `config.h` file at the root of the
+repository, thus requiring recompiling for every configuration change. This is
+meant to simplify the source code while maintaining flexibility. In order to
+compile the application the following should be enough for a UNIX system:
+
+```sh
+gcc -ansi -std=c89 -Wall -pedantic amigos.c -o amigos
+```
+
+To learn more about which options are available for configuration, consult the
+`amigos.c` section commented as `/* Some common definitions and defaults. */`
+until the inclusion of the `config.h` file. All definitions there are
+overwriteable and should be pretty self-explanatory.
+
+After the server has been compiled it's simply a matter of running it and
+specifying a `docroot` as the first argument, equivalent to the `htdocs` folder
+on Apache, where the root of your gopherhole will reside.
+
 ## gophermap
 
 This server implementation supports the usage of `gophermap` files inside
