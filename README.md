@@ -7,6 +7,37 @@ This server implementation strictly follows [RFC 1436](https://www.rfc-editor.or
 with the exception of the `i` type that's commonly used in modern Gopher
 implementations.
 
+## gophermap
+
+This server implementation supports the usage of `gophermap` files inside
+directories, which will be read and rendered automatically depending on the
+selector sent to the server. The syntax is close to what
+[gophernicus](https://github.com/gophernicus/gophernicus/blob/master/README.gophermap)
+uses, although there are some slight differences, mainly to simplify it, and may
+catch you off guard, so watch out for them if you're used to that
+implementation.
+
+Any line that doesn't contain any `TAB` characters will automatically be
+rendered as an info (`i` type) entry.
+
+If a line has at least one (1) `TAB` character it will be interpreted as an
+entry and requires at least the entry's `type`, `name`, and `selector`, with the
+`hostname` and `port` fields being optional, as per the following description:
+
+    <type><name>TAB<selector>[TAB[hostname]][TAB[port]]
+
+If a selector starts with a `/` (forward slash) character, it will be sent to
+the client as is, meaning the selector points to an absolute reference. All
+other selectors will have their content prepended by the current selector sent
+to the server, meaning they will be relative to the current selector.
+
+If a single dot (`.`) is found on a line by itself, the processing of the
+gophermap will stop and no further lines will be rendered.
+
+If a single asterisk (`*`) is found on a line by itself, a listing of the
+current directory is rendered (without the inclusion of the gophermap file), and
+regular rendering resumes on the next line.
+
 ## License
 
 This library is free software; you may redistribute and/or modify it under the
