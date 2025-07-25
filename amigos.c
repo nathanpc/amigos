@@ -9,6 +9,10 @@
 #ifdef _WIN32
 	#define WIN32_LEAN_AND_MEAN
 	#include <windows.h>
+
+	#ifdef DEBUG
+		#include <crtdbg.h>
+	#endif /* DEBUG */
 #endif /* _WIN32 */
 
 #include <stdlib.h>
@@ -64,8 +68,17 @@
 #include "config.h"
 
 /* Socket abstractions. */
-typedef int sockfd_t;
-#define SOCKERR -1
+#ifdef _WIN32
+	#define SOCKERR SOCKET_ERROR
+	typedef SOCKET sockfd_t;
+	#define sockclose closesocket
+	#ifndef socklen_t
+		typedef size_t socklen_t;
+	#endif /* !socklen_t */
+#else
+	#define SOCKERR -1
+	typedef int sockfd_t;
+#endif /* _WIN32 */
 #ifndef INET6_ADDRSTRLEN
 	#define INET6_ADDRSTRLEN 46
 #endif /* !INET6_ADDRSTRLEN */
@@ -96,7 +109,11 @@ enum client_conn_status {
 typedef struct client_conn {
 	uint8_t status;
 	sockfd_t sockfd;
+#ifdef _WIN32
+	HANDLE thread;
+#else
 	pthread_t thread;
+#endif /* _WIN32 */
 	char *selector;
 } client_conn_t;
 
@@ -166,6 +183,18 @@ void signal_handler(int signum) {
 int main(int argc, char **argv) {
 	int retval;
 	int i;
+#ifdef _WIN32
+	WSADATA wsaData;
+	WORD wVersionRequested;
+
+#ifdef DEBUG
+	/* Initialize memory leak detection. */
+	_CrtMemState snapBegin;
+	_CrtMemState snapEnd;
+	_CrtMemState snapDiff;
+	_CrtMemCheckpoint(&snapBegin);
+#endif /* DEBUG */
+#endif /* _WIN32 */
 
 	/* Check if we have a document root folder. */
 	if (argc < 2) {
@@ -179,6 +208,15 @@ int main(int argc, char **argv) {
 		printf("ERROR: Document root path '%s' doesn't exist.\n", docroot);
 		return 1;
 	}
+
+#ifdef _WIN32
+	// Initialize Winsock stuff.
+	wVersionRequested = MAKEWORD(2, 2);
+	if ((retval = WSAStartup(wVersionRequested, &wsaData)) != 0) {
+		printf("WSAStartup failed with error %i\n", retval);
+		return retval;
+	}
+#endif /* _WIN32 */
 
 	/* Register signal handler. */
 	signal(SIGINT, signal_handler);
@@ -209,6 +247,26 @@ finish:
 	if (running)
 		server_stop();
 	const_free();
+#ifdef _WIN32
+	WSACleanup();
+
+#ifdef DEBUG
+	/* Detect memory leaks. */
+	_CrtMemCheckpoint(&snapEnd);
+	if (_CrtMemDifference(&snapDiff, &snapBegin, &snapEnd)) {
+		OutputDebugString(_T("MEMORY LEAKS DETECTED\r\n"));
+		OutputDebugString(L"----------- _CrtMemDumpStatistics ---------\r\n");
+		_CrtMemDumpStatistics(&snapDiff);
+		OutputDebugString(L"----------- _CrtMemDumpAllObjectsSince ---------\r\n");
+		_CrtMemDumpAllObjectsSince(&snapBegin);
+		OutputDebugString(L"----------- _CrtDumpMemoryLeaks ---------\r\n");
+		_CrtDumpMemoryLeaks();
+	} else {
+		OutputDebugString(_T("No memory leaks detected. Congratulations!\r\n"));
+	}
+#endif /* DEBUG */
+#endif /* _WIN32 */
+
 	return retval;
 }
 
@@ -228,10 +286,15 @@ finish:
  * @return Socket file descriptor or SOCKERR if an error occurred.
  */
 sockfd_t server_start(int af, const char *addr, uint16_t port) {
+#ifdef _WIN32
+	struct sockaddr_in sa;
+	char flag;
+#else
 	struct sockaddr_storage sa;
+	int flag;
+#endif /* _WIN32 */
 	sockfd_t sockfd;
 	socklen_t addrlen;
-	int flag;
 	struct timeval tv;
 
 	/* Zero out address structure and cache its size. */
@@ -271,30 +334,35 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &flag,
 			sizeof(flag)) == SOCKERR) {
 		perror("ERROR: Failed to set socket address reuse");
-		close(sockfd);
+		sockclose(sockfd);
 		return SOCKERR;
 	}
 
 	/* Set a receive timeout so that we don't block indefinitely. */
 	tv.tv_sec = RECV_TIMEOUT;
+#ifdef _WIN32
+	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv,
+			sizeof(tv)) == SOCKERR) {
+#else
 	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv,
 			sizeof(tv)) == SOCKERR) {
+#endif /* _WIN32 */
 		perror("ERROR: Failed to set socket receive timeout");
-		close(sockfd);
+		sockclose(sockfd);
 		return SOCKERR;
 	}
 
 	/* Bind address to socket. */
 	if (bind(sockfd, (struct sockaddr*)&sa, addrlen) == SOCKERR) {
 		perror("ERROR: Failed binding to socket");
-		close(sockfd);
+		sockclose(sockfd);
 		return SOCKERR;
 	}
 
 	/* Start listening on our desired socket. */
 	if (listen(sockfd, LISTEN_BACKLOG) == SOCKERR) {
 		perror("ERROR: Failed to listen on socket");
-		close(sockfd);
+		sockclose(sockfd);
 		return SOCKERR;
 	}
 
@@ -312,7 +380,7 @@ void server_stop(void) {
 	/* Stop the server. */
 	printf("Stopping the server...\n");
 	running = 0;
-	if ((server_socket != SOCKERR) && (close(server_socket) == SOCKERR))
+	if ((server_socket != SOCKERR) && (sockclose(server_socket) == SOCKERR))
 		perror("ERROR: Failed to close server socket");
 	server_socket = SOCKERR;
 
@@ -323,7 +391,7 @@ void server_stop(void) {
 
 		connections[i].status = 0;
 		if (connections[i].sockfd != SOCKERR)
-			close(connections[i].sockfd);
+			sockclose(connections[i].sockfd);
 		connections[i].sockfd = SOCKERR;
 		if (connections[i].thread != NULL)
 			pthread_join(connections[i].thread, NULL);
@@ -354,8 +422,12 @@ void server_loop(int af, sockfd_t sockfd) {
 
 		/* Check if we can accept new connections at the moment. */
 		for (i = 0; i < MAX_CONNECTIONS; i++) {
-			client_conn_t *conn;
+#ifdef _WIN32
+			struct sockaddr_in csa;
+#else
 			struct sockaddr_storage csa;
+#endif /* _WIN32 */
+			client_conn_t *conn;
 			socklen_t socklen;
 			char addrstr[INET6_ADDRSTRLEN];
 
@@ -386,7 +458,7 @@ void server_loop(int af, sockfd_t sockfd) {
 			if (pthread_create(&conn->thread, NULL, server_process_request,
 					conn)) {
 				printf("ERROR: Failed to create request processing thread\n");
-				close(conn->sockfd);
+				sockclose(conn->sockfd);
 				conn->status = 0;
 				break;
 			}
@@ -490,7 +562,7 @@ close_conn:
 
 	/* Close the client connection and signal that we are finished here. */
 	if (conn->sockfd != SOCKERR)
-		close(conn->sockfd);
+		sockclose(conn->sockfd);
 	conn->sockfd = SOCKERR;
 	conn->status |= CONN_FINISHED;
 
@@ -508,6 +580,13 @@ close_conn:
  * @return Pointer to the destination string or NULL if an error occurred.
  */
 const char* inet_addr_str(int af, void *addr, char *buf) {
+#ifndef inet_ntop
+	if (af == AF_INET) {
+		return inet_ntoa(((struct sockaddr_in*)addr)->sin_addr);
+	} else {
+		return NULL;
+	}
+#else
 	if (af == AF_INET) {
 		return inet_ntop(af, &((struct sockaddr_in*)addr)->sin_addr, buf,
 			INET6_ADDRSTRLEN);
@@ -515,6 +594,7 @@ const char* inet_addr_str(int af, void *addr, char *buf) {
 		return inet_ntop(af, &((struct sockaddr_in6*)addr)->sin6_addr, buf,
 			INET6_ADDRSTRLEN);
 	}
+#endif /* !inet_ntop */
 }
 
 /**
