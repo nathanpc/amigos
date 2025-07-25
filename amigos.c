@@ -6,24 +6,35 @@
  * @author Nathan Campos <nathan@innoveworkshop.com>
  */
 
+#ifdef _WIN32
+	#define WIN32_LEAN_AND_MEAN
+	#include <windows.h>
+#endif /* _WIN32 */
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <string.h>
 #include <signal.h>
-#include <pthread.h>
-#include <unistd.h>
-#include <dirent.h>
 
-#include <sys/types.h>
-#include <sys/time.h>
-#include <sys/stat.h>
-#include <sys/socket.h>
+#ifdef _WIN32
+	#include <winsock2.h>
+	#include <ws2tcpip.h>
+#else
+	#include <pthread.h>
+	#include <unistd.h>
+	#include <dirent.h>
 
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
+	#include <sys/types.h>
+	#include <sys/time.h>
+	#include <sys/stat.h>
+	#include <sys/socket.h>
+
+	#include <netinet/in.h>
+	#include <arpa/inet.h>
+	#include <netdb.h>
+#endif /* _WIN32 */
 
 
 /* Some common definitions and defaults. */
@@ -41,11 +52,13 @@
 #define INVALID_HOST     "null.host"
 #define INVALID_PORT     0
 
-#ifdef _WIN32
-	#define PATH_SEPARATOR '\\'
-#else
-	#define PATH_SEPARATOR '/'
-#endif /* _WIN32 */
+#ifndef PATH_SEPARATOR
+	#ifdef _WIN32
+		#define PATH_SEPARATOR '\\'
+	#else
+		#define PATH_SEPARATOR '/'
+	#endif /* _WIN32 */
+#endif /* PATH_SEPARATOR */
 
 /* Include configuration. */
 #include "config.h"
