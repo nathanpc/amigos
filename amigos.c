@@ -1127,6 +1127,8 @@ gopher_item_t* gopher_item_parse(const char *line) {
 		cbuf++;
 	}
 	*cbuf = '\0';
+	if (item->hostname != NULL)
+		free(item->hostname);
 	item->hostname = strdup(buf);
 	if (*tmp == '\0')
 		return item;
