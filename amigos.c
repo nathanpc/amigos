@@ -165,8 +165,9 @@ int client_send_error(const client_conn_t *conn, const char *msg);
 /* File system utilities. */
 int file_exists(const char *fname);
 int dir_exists(const char *path);
-size_t path_concat(char **buf, ...);
+size_t path_concat(char **buf, char sep, ...);
 int path_sanitize(char *path);
+int path_normalize(char *path, char fromsep, char tosep);
 
 /* Misc. */
 void const_init(void);
@@ -570,7 +571,8 @@ thread_ret server_process_request(void *data) {
 	/* Build local file request path from selector. */
 	if (*selector == '\0') {
 		fpath = strdup(docroot);
-	} else if (path_concat(&fpath, docroot, selector, NULL) == 0) {
+	} else if (path_concat(&fpath, PATH_SEPARATOR, docroot, selector,
+			NULL) == 0) {
 		printf("ERROR: Failed to build request path for selector %s\n",
 			selector);
 		goto close_conn;
@@ -582,7 +584,7 @@ thread_ret server_process_request(void *data) {
 		char *mapfile;
 
 		/* Check if there's a gophermap file in the directory. */
-		if (!path_concat(&mapfile, fpath, "gophermap", NULL))
+		if (!path_concat(&mapfile, PATH_SEPARATOR, fpath, "gophermap", NULL))
 			goto close_conn;
 		if (file_exists(mapfile)) {
 			/* Send gophermap. */
@@ -928,8 +930,8 @@ int client_send_item(const client_conn_t *conn, const gopher_item_t *item) {
 	/* Build up the selector string. */
 	selector = NULL;
 	if ((*conn->selector != '\0') && (item->selector != NULL) &&
-			(item->selector[0] != '/')) {
-		if (path_concat(&selector, conn->selector, item->selector, NULL) == 0) {
+			!((*item->selector == '/') || (*item->selector == '\\'))) {
+		if (path_concat(&selector, '/', conn->selector, item->selector, NULL) == 0) {
 			printf("ERROR: Failed to concatenate base selector '%s' with "
 				"relative selector '%s'\n", conn->selector, item->selector);
 			return 0;
@@ -1227,7 +1229,7 @@ int dir_exists(const char *path) {
 }
 
 /**
- * Sanitizes a path and converts path separators if needed.
+ * Sanitizes a path to ensure idiots don't abuse us.
  *
  * @param path Path to be sanitized.
  *
@@ -1247,13 +1249,33 @@ int path_sanitize(char *path) {
 			break;
 		}
 
+		buf++;
+	}
+
+	return ret;
+}
+
+/**
+ * Normalizes a path by path separators if needed.
+ *
+ * @param path    Path to be normalized.
+ * @param fromsep Path separator to be normalized.
+ * @param tosep   Path separator to normalize to.
+ *
+ * @return TRUE if path was altered.
+ */
+int path_normalize(char *path, char fromsep, char tosep) {
+	int ret;
+	char *buf;
+
+	ret = 0;
+	buf = path;
+	while (*buf != '\0') {
 		/* Normalize path separators. */
-#ifdef _WIN32
-		if (*buf == '/') {
-			*buf = '\\';
+		if (*buf == fromsep) {
+			*buf = tosep;
 			ret = 1;
 		}
-#endif /* _WIN32 */
 
 		buf++;
 	}
@@ -1266,13 +1288,14 @@ int path_sanitize(char *path) {
  *
  * @warning This function allocates memory that must be free'd by you!
  *
- * @param buf Pointer to final path string. (Allocated internally)
+ * @param buf Pointer to final path string. ((Re)Allocated internally)
+ * @param sep Path separator to use when normalizing and concatenating.
  * @param ... Paths to be concatenated. WARNING: A NULL must be placed at the
  *            end to indicate the end of the list.
  *
  * @return Size of the final buffer or 0 if an error occurred.
  */
-size_t path_concat(char **buf, ...) {
+size_t path_concat(char **buf, char sep, ...) {
 	va_list ap;
 	size_t len;
 	const char *path;
@@ -1283,7 +1306,7 @@ size_t path_concat(char **buf, ...) {
 	len = 1;
 
 	/* Go through the paths. */
-	va_start(ap, buf);
+	va_start(ap, sep);
 	path = va_arg(ap, char *);
 	while (path != NULL) {
 		size_t plen;
@@ -1297,15 +1320,17 @@ size_t path_concat(char **buf, ...) {
 		cur = (*buf) + plen - 1;
 
 		/* Should we bother prepending the path separator? */
-		if ((plen > 1) && (*(cur - 1) != PATH_SEPARATOR)) {
-			*cur = PATH_SEPARATOR;
+		if ((plen > 1) && (*(cur - 1) != sep)) {
+			*cur = sep;
 			cur++;
 			len++;
 		}
 
-		/* Concatenate the next path. */
+		/* Concatenate the next path while normalizing separators. */
 		while (*path != '\0') {
 			*cur = *path;
+			if ((*cur == '/') || (*cur == '\\'))
+				*cur = sep;
 
 			cur++;
 			path++;
