@@ -9,6 +9,7 @@
 #ifdef _WIN32
 	#define WIN32_LEAN_AND_MEAN
 	#include <windows.h>
+	#include <process.h>
 
 	#ifdef DEBUG
 		#include <crtdbg.h>
@@ -80,6 +81,16 @@
 	#define INET6_ADDRSTRLEN 46
 #endif /* !INET6_ADDRSTRLEN */
 
+/* Thread abstractions. */
+#ifdef _WIN32
+	#define THREAD_WAIT_TIMEOUT 1000
+	typedef HANDLE thread_hnd_t;
+	#define thread_ret unsigned int __stdcall
+#else
+	typedef pthread_t thread_hnd_t;
+	#define thread_ret void*
+#endif /* _WIN32 */
+
 /**
  * Abstraction of a Gopher item in a listing.
  */
@@ -106,12 +117,11 @@ enum client_conn_status {
 typedef struct client_conn {
 	uint8_t status;
 	sockfd_t sockfd;
-#ifdef _WIN32
-	HANDLE thread;
-#else
-	pthread_t thread;
-#endif /* _WIN32 */
 	char *selector;
+	thread_hnd_t thread;
+#ifdef _WIN32
+	unsigned int thread_id;
+#endif /* _WIN32 */
 } client_conn_t;
 
 
@@ -135,7 +145,7 @@ void gopher_item_print(gopher_item_t *item);
 sockfd_t server_start(int af, const char *addr, uint16_t port);
 void server_loop(int af, sockfd_t sockfd);
 void server_stop(void);
-void* server_process_request(void *data);
+thread_ret server_process_request(void *data);
 const char* inet_addr_str(int af, void *addr, char *buf);
 
 /* Client operations. */
@@ -251,15 +261,15 @@ finish:
 	/* Detect memory leaks. */
 	_CrtMemCheckpoint(&snapEnd);
 	if (_CrtMemDifference(&snapDiff, &snapBegin, &snapEnd)) {
-		OutputDebugString(_T("MEMORY LEAKS DETECTED\r\n"));
-		OutputDebugString(L"----------- _CrtMemDumpStatistics ---------\r\n");
+		OutputDebugString("MEMORY LEAKS DETECTED\r\n");
+		OutputDebugString("----------- _CrtMemDumpStatistics ---------\r\n");
 		_CrtMemDumpStatistics(&snapDiff);
-		OutputDebugString(L"----------- _CrtMemDumpAllObjectsSince ---------\r\n");
+		OutputDebugString("----------- _CrtMemDumpAllObjectsSince ---------\r\n");
 		_CrtMemDumpAllObjectsSince(&snapBegin);
-		OutputDebugString(L"----------- _CrtDumpMemoryLeaks ---------\r\n");
+		OutputDebugString("----------- _CrtDumpMemoryLeaks ---------\r\n");
 		_CrtDumpMemoryLeaks();
 	} else {
-		OutputDebugString(_T("No memory leaks detected. Congratulations!\r\n"));
+		OutputDebugString("No memory leaks detected. Congratulations!\r\n");
 	}
 #endif /* DEBUG */
 #endif /* _WIN32 */
@@ -389,8 +399,14 @@ void server_stop(void) {
 		if (connections[i].sockfd != SOCKERR)
 			sockclose(connections[i].sockfd);
 		connections[i].sockfd = SOCKERR;
-		if (connections[i].thread != NULL)
+		if (connections[i].thread != NULL) {
+#ifdef _WIN32
+			WaitForSingleObject(connections[i].thread, THREAD_WAIT_TIMEOUT);
+			CloseHandle(connections[i].thread);
+#else
 			pthread_join(connections[i].thread, NULL);
+#endif /* _WIN32 */
+		}
 		connections[i].thread = NULL;
 	}
 }
@@ -408,8 +424,15 @@ void server_loop(int af, sockfd_t sockfd) {
 		/* Clean up finished requests. */
 		for (i = 0; i < MAX_CONNECTIONS; i++) {
 			if (connections[i].status & CONN_FINISHED) {
-				if (connections[i].thread != NULL)
+				if (connections[i].thread != NULL) {
+#ifdef _WIN32
+					WaitForSingleObject(connections[i].thread,
+						THREAD_WAIT_TIMEOUT);
+					CloseHandle(connections[i].thread);
+#else
 					pthread_join(connections[i].thread, NULL);
+#endif /* _WIN32 */
+				}
 				connections[i].thread = NULL;
 				connections[i].selector = NULL;
 				connections[i].status = 0;
@@ -422,6 +445,7 @@ void server_loop(int af, sockfd_t sockfd) {
 			client_conn_t *conn;
 			socklen_t socklen;
 			char addrstr[INET6_ADDRSTRLEN];
+			int threrr;
 
 			/* Ignore slots currently in use. */
 			conn = &connections[i];
@@ -447,8 +471,15 @@ void server_loop(int af, sockfd_t sockfd) {
 			}
 
 			/* Process the client's request. */
-			if (pthread_create(&conn->thread, NULL, server_process_request,
-					conn)) {
+#ifdef _WIN32
+			conn->thread = (HANDLE)_beginthreadex(NULL, 0,
+				&server_process_request, conn, 0, &conn->thread_id);
+			threrr = conn->thread == 0;
+#else
+			threrr = pthread_create(&conn->thread, NULL, server_process_request,
+				conn);
+#endif /* _WIN32 */
+			if (threrr) {
 				printf("ERROR: Failed to create request processing thread\n");
 				sockclose(conn->sockfd);
 				conn->status = 0;
@@ -467,7 +498,7 @@ void server_loop(int af, sockfd_t sockfd) {
  *
  * @param data Pointer to a client_conn_t structure.
  */
-void* server_process_request(void *data) {
+thread_ret server_process_request(void *data) {
 	client_conn_t *conn;
 	char selector[256];
 	char *fpath;
@@ -558,8 +589,13 @@ close_conn:
 	conn->sockfd = SOCKERR;
 	conn->status |= CONN_FINISHED;
 
+#ifdef _WIN32
+	_endthreadex(0);
+	return 0;
+#else
 	pthread_exit(NULL);
 	return NULL;
+#endif /* _WIN32 */
 }
 
 /**
