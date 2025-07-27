@@ -561,14 +561,20 @@ thread_ret server_process_request(void *data) {
 			goto close_conn;
 		if (file_exists(mapfile)) {
 			/* Send gophermap. */
-			if (!client_send_gophermap(conn, mapfile))
+			if (!client_send_gophermap(conn, mapfile)) {
+				free(mapfile);
 				goto close_conn;
+			}
 		} else {
 			/* List the contents of the directory. */
-			if (!client_send_dir(conn, fpath, 1))
+			if (!client_send_dir(conn, fpath, 1)) {
+				free(mapfile);
 				goto close_conn;
+			}
 		}
 
+		free(mapfile);
+		mapfile = NULL;
 		send(conn->sockfd, ".", 1, 0);
 	} else if (file_exists(fpath)) {
 		/* Selector matches a file. */
@@ -614,7 +620,7 @@ close_conn:
 const char* inet_addr_str(int af, void *addr, char *buf) {
 #ifndef inet_ntop
 	if (af == AF_INET) {
-		return inet_ntoa(((struct sockaddr_in*)addr)->sin_addr);
+		return strcpy(buf, inet_ntoa(((struct sockaddr_in*)addr)->sin_addr));
 	} else {
 		printf("ERROR: IPv6 not yet implemented in inet_addr_str\n");
 		return NULL;
