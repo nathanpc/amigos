@@ -27,6 +27,19 @@ After the server has been compiled it's simply a matter of running it and
 specifying a `docroot` as the first argument, equivalent to the `htdocs` folder
 on Apache, where the root of your gopherhole will reside.
 
+### Windows
+
+This project is developed in such a way that it's able to be compiled under
+Microsoft Visual C++ 6, giving it the maximum amount of compatibility, and
+enabling the generation of executables that work from Windows 95 all the way to
+the latest Windows 11 version.
+
+A workspace for Visual C++ 6 can be found under the `win32/` directory, although
+before trying to compile this project you **MUST** install the
+[Windows Server 2003 PSDK (February 2003)](https://archive.org/details/MSDN_-_No_0004.7_-_May_2003).
+This SDK, specifically the Internet Explorer SDK, contains updated definitions
+of sockets-related functions and types.
+
 ## gophermap
 
 This server implementation supports the usage of `gophermap` files inside

@@ -72,9 +72,6 @@
 	#define SOCKERR SOCKET_ERROR
 	typedef SOCKET sockfd_t;
 	#define sockclose closesocket
-	#ifndef socklen_t
-		typedef size_t socklen_t;
-	#endif /* !socklen_t */
 #else
 	#define SOCKERR -1
 	typedef int sockfd_t;
@@ -286,16 +283,15 @@ finish:
  * @return Socket file descriptor or SOCKERR if an error occurred.
  */
 sockfd_t server_start(int af, const char *addr, uint16_t port) {
-#ifdef _WIN32
-	struct sockaddr_in sa;
-	char flag;
-#else
 	struct sockaddr_storage sa;
-	int flag;
-#endif /* _WIN32 */
 	sockfd_t sockfd;
 	socklen_t addrlen;
 	struct timeval tv;
+#ifdef _WIN32
+	char flag;
+#else
+	int flag;
+#endif /* _WIN32 */
 
 	/* Zero out address structure and cache its size. */
 	memset(&sa, '\0', sizeof(sa));
@@ -422,11 +418,7 @@ void server_loop(int af, sockfd_t sockfd) {
 
 		/* Check if we can accept new connections at the moment. */
 		for (i = 0; i < MAX_CONNECTIONS; i++) {
-#ifdef _WIN32
-			struct sockaddr_in csa;
-#else
 			struct sockaddr_storage csa;
-#endif /* _WIN32 */
 			client_conn_t *conn;
 			socklen_t socklen;
 			char addrstr[INET6_ADDRSTRLEN];
@@ -580,13 +572,6 @@ close_conn:
  * @return Pointer to the destination string or NULL if an error occurred.
  */
 const char* inet_addr_str(int af, void *addr, char *buf) {
-#ifndef inet_ntop
-	if (af == AF_INET) {
-		return inet_ntoa(((struct sockaddr_in*)addr)->sin_addr);
-	} else {
-		return NULL;
-	}
-#else
 	if (af == AF_INET) {
 		return inet_ntop(af, &((struct sockaddr_in*)addr)->sin_addr, buf,
 			INET6_ADDRSTRLEN);
@@ -594,7 +579,6 @@ const char* inet_addr_str(int af, void *addr, char *buf) {
 		return inet_ntop(af, &((struct sockaddr_in6*)addr)->sin6_addr, buf,
 			INET6_ADDRSTRLEN);
 	}
-#endif /* !inet_ntop */
 }
 
 /**
