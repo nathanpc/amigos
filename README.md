@@ -18,6 +18,10 @@ compile the application the following should be enough for a UNIX system:
 gcc -ansi -std=c89 -Wall -pedantic amigos.c -o amigos
 ```
 
+If you're compiling this under Linux using GCC, you should set the C standard
+parameter to `-std=gnu89`, otherwise GCC will complain about `snprintf` not
+being defined and a couple of other things.
+
 To learn more about which options are available for configuration, consult the
 `amigos.c` section commented as `/* Some common definitions and defaults. */`
 until the inclusion of the `config.h` file. All definitions there are
@@ -39,6 +43,25 @@ before trying to compile this project you **MUST** install the
 [Windows Server 2003 PSDK (February 2003)](https://archive.org/details/MSDN_-_No_0004.7_-_May_2003).
 This SDK, specifically the Internet Explorer SDK, contains updated definitions
 of sockets-related functions and types.
+
+### Detecting Memory Leaks
+
+Since this is a server that's supposed to be running for many months unattended,
+it's important to ensure that the code base is free of memory leaks on any
+platforms. If you're contributing to this project you **MUST** test if your code
+is producing any memory leaks.
+
+If you're developing under Windows, compiling a `Debug` target should already
+give you some information on memory leaks in the Debug Console whenever the
+execution of the applications ends. If you're developing under a UNIX variant,
+`valgrind` is required for checking this. The following commands should be used
+for this operation:
+
+```sh
+gcc -ansi -std=gnu89 -Wall -pedantic -g3 -DDEBUG -DMEMCHECK amigos.c -o amigos
+valgrind --tool=memcheck --leak-check=full --show-leak-kinds=all \
+    --track-origins=yes ./amigos godocs/
+```
 
 ## gophermap
 
