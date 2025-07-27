@@ -74,11 +74,12 @@
 
 /* Socket abstractions. */
 #ifdef _WIN32
-	#define SOCKERR SOCKET_ERROR
-	typedef SOCKET sockfd_t;
+	#define SOCKERR   SOCKET_ERROR
 	#define sockclose closesocket
+	typedef SOCKET sockfd_t;
 #else
-	#define SOCKERR -1
+	#define SOCKERR   -1
+	#define sockclose close
 	typedef int sockfd_t;
 #endif /* _WIN32 */
 #ifndef INET6_ADDRSTRLEN
@@ -165,7 +166,7 @@ int client_send_error(const client_conn_t *conn, const char *msg);
 /* File system utilities. */
 int file_exists(const char *fname);
 int dir_exists(const char *path);
-size_t path_concat(char **buf, char sep, ...);
+size_t path_concat(char **buf, const char *sep, ...);
 int path_sanitize(char *path);
 int path_normalize(char *path, char fromsep, char tosep);
 
@@ -237,7 +238,7 @@ int main(int argc, char **argv) {
 	if (argc < 2) {
 		printf("usage: %s docroot\n", argv[0]);
 		return 1;
-	} 
+	}
 	docroot = argv[1];
 
 	/* Check if document root folder actually exists. */
@@ -533,11 +534,13 @@ thread_ret server_process_request(void *data) {
 	char selector[256];
 	char *fpath;
 	ssize_t len;
+	char sep;
 	int i;
 
 	/* Initialize values. */
 	conn = (client_conn_t*)data;
 	conn->selector = selector;
+	sep = PATH_SEPARATOR;
 	fpath = NULL;
 
 	/* Read the selector from client's request. */
@@ -571,7 +574,7 @@ thread_ret server_process_request(void *data) {
 	/* Build local file request path from selector. */
 	if (*selector == '\0') {
 		fpath = strdup(docroot);
-	} else if (path_concat(&fpath, PATH_SEPARATOR, docroot, selector,
+	} else if (path_concat(&fpath, &sep, docroot, selector,
 			NULL) == 0) {
 		printf("ERROR: Failed to build request path for selector %s\n",
 			selector);
@@ -584,7 +587,7 @@ thread_ret server_process_request(void *data) {
 		char *mapfile;
 
 		/* Check if there's a gophermap file in the directory. */
-		if (!path_concat(&mapfile, PATH_SEPARATOR, fpath, "gophermap", NULL))
+		if (!path_concat(&mapfile, &sep, fpath, "gophermap", NULL))
 			goto close_conn;
 		if (file_exists(mapfile)) {
 			/* Send gophermap. */
@@ -931,7 +934,9 @@ int client_send_item(const client_conn_t *conn, const gopher_item_t *item) {
 	selector = NULL;
 	if ((*conn->selector != '\0') && (item->selector != NULL) &&
 			!((*item->selector == '/') || (*item->selector == '\\'))) {
-		if (path_concat(&selector, '/', conn->selector, item->selector, NULL) == 0) {
+		char sep = '/';
+		if (path_concat(&selector, &sep, conn->selector, item->selector,
+				NULL) == 0) {
 			printf("ERROR: Failed to concatenate base selector '%s' with "
 				"relative selector '%s'\n", conn->selector, item->selector);
 			return 0;
@@ -1295,7 +1300,7 @@ int path_normalize(char *path, char fromsep, char tosep) {
  *
  * @return Size of the final buffer or 0 if an error occurred.
  */
-size_t path_concat(char **buf, char sep, ...) {
+size_t path_concat(char **buf, const char *sep, ...) {
 	va_list ap;
 	size_t len;
 	const char *path;
@@ -1320,8 +1325,8 @@ size_t path_concat(char **buf, char sep, ...) {
 		cur = (*buf) + plen - 1;
 
 		/* Should we bother prepending the path separator? */
-		if ((plen > 1) && (*(cur - 1) != sep)) {
-			*cur = sep;
+		if ((plen > 1) && (*(cur - 1) != *sep)) {
+			*cur = *sep;
 			cur++;
 			len++;
 		}
@@ -1330,7 +1335,7 @@ size_t path_concat(char **buf, char sep, ...) {
 		while (*path != '\0') {
 			*cur = *path;
 			if ((*cur == '/') || (*cur == '\\'))
-				*cur = sep;
+				*cur = *sep;
 
 			cur++;
 			path++;
