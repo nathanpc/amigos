@@ -183,6 +183,28 @@ void signal_handler(int signum) {
 		server_stop();
 }
 
+#ifdef _WIN32
+/**
+ * Handles console control signals, similar to signal_handler, but for the
+ * command prompt window in Windows.
+ *
+ * @param dwCtrlType Control signal type.
+ *
+ * @return TRUE if we handled the control signal, FALSE otherwise.
+ */
+BOOL WINAPI ConsoleSignalHandler(DWORD dwCtrlType) {
+	switch (dwCtrlType) {
+	case CTRL_CLOSE_EVENT:
+	case CTRL_LOGOFF_EVENT:
+	case CTRL_SHUTDOWN_EVENT:
+		server_stop();
+		return TRUE;
+	}
+
+	return FALSE;
+}
+#endif /* _WIN32 */
+
 /**
  * Application's main entry point.
  *
@@ -205,6 +227,9 @@ int main(int argc, char **argv) {
 	_CrtMemState snapDiff;
 	_CrtMemCheckpoint(&snapBegin);
 #endif /* DEBUG */
+
+	/* Setup console signal handler. */
+	SetConsoleCtrlHandler(&ConsoleSignalHandler, TRUE);
 #endif /* _WIN32 */
 
 	/* Check if we have a document root folder. */
