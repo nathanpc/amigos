@@ -26,6 +26,10 @@
 #ifdef _WIN32
 	#include <winsock2.h>
 	#include <ws2tcpip.h>
+
+	#ifndef snprintf
+		#define snprintf _snprintf
+	#endif
 #else
 	#include <pthread.h>
 	#include <unistd.h>
@@ -207,7 +211,7 @@ int main(int argc, char **argv) {
 	if (argc < 2) {
 		printf("usage: %s docroot\n", argv[0]);
 		return 1;
-	}
+	} 
 	docroot = argv[1];
 
 	/* Check if document root folder actually exists. */
@@ -608,6 +612,14 @@ close_conn:
  * @return Pointer to the destination string or NULL if an error occurred.
  */
 const char* inet_addr_str(int af, void *addr, char *buf) {
+#ifndef inet_ntop
+	if (af == AF_INET) {
+		return inet_ntoa(((struct sockaddr_in*)addr)->sin_addr);
+	} else {
+		printf("ERROR: IPv6 not yet implemented in inet_addr_str\n");
+		return NULL;
+	}
+#else
 	if (af == AF_INET) {
 		return inet_ntop(af, &((struct sockaddr_in*)addr)->sin_addr, buf,
 			INET6_ADDRSTRLEN);
@@ -615,6 +627,7 @@ const char* inet_addr_str(int af, void *addr, char *buf) {
 		return inet_ntop(af, &((struct sockaddr_in6*)addr)->sin6_addr, buf,
 			INET6_ADDRSTRLEN);
 	}
+#endif /* !inet_ntop */
 }
 
 /**
@@ -670,19 +683,36 @@ int client_send_file(const client_conn_t *conn, const char *path) {
  * @return TRUE if the operation was successful, FALSE otherwise.
  */
 int client_send_dir(const client_conn_t *conn, const char *path, int header) {
-	gopher_item_t *item;
+#ifdef _WIN32
+   WIN32_FIND_DATA ffd;
+   char szDir[MAX_PATH];
+   BOOL bHasNext;
+   HANDLE hFind;
+#else
 	struct dirent *dirent;
-	char name[71];
 	DIR *dh;
+#endif /* _WIN32 */
+	gopher_item_t *item;
+	char name[71];
 	int ret;
+	ret = 1;
 
 	/* Open directory. */
-	ret = 1;
+#ifdef _WIN32
+	snprintf(szDir, MAX_PATH, "%s\\*", path);
+	bHasNext = 1;
+	hFind = FindFirstFile(szDir, &ffd);
+	if (hFind == INVALID_HANDLE_VALUE) {
+		printf("ERROR: Failed to open directory for listing\n");
+		return 0;
+	}
+#else
 	dh = opendir(path);
 	if (dh == NULL) {
 		perror("ERROR: Failed to open directory for listing");
 		return 0;
 	}
+#endif /* _WIN32 */
 
 	/* Print out a header. */
 	if (header) {
@@ -698,6 +728,29 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 	item->port = DEFAULT_PORT;
 
 	/* Read directory contents. */
+#ifdef _WIN32
+	while (bHasNext != 0) {
+		BOOL bIsDir;
+
+		/* Cache if entry is a directory. */
+		bIsDir = ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
+
+		/* Skip hidden and special files. */
+		if (*ffd.cFileName == '.')
+			goto find_next;
+
+		/* Skip gophermap files. */
+		if (*ffd.cFileName == 'g') {
+			if (strcmp(ffd.cFileName, "gophermap") == 0)
+				goto find_next;
+		}
+
+		/* Build up Gopher item entry. */
+		item->type = bIsDir ? '1' : '0';
+		snprintf(name, 71, "%s%c", ffd.cFileName, bIsDir ? '/' : ' ');
+		item->name = name;
+		item->selector = ffd.cFileName;
+#else
 	while ((dirent = readdir(dh)) != NULL) {
 		/* Skip hidden and special files. */
 		if (*dirent->d_name == '.')
@@ -715,6 +768,7 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 			(dirent->d_type == DT_DIR ? '/' : ' '));
 		item->name = name;
 		item->selector = dirent->d_name;
+#endif /* _WIN32 */
 
 		/* Send the item to the client. */
 		if (!client_send_item(conn, item))
@@ -723,10 +777,19 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 		/* Free used resources. */
 		item->name = NULL;
 		item->selector = NULL;
+
+#ifdef _WIN32
+find_next:
+		bHasNext = FindNextFile(hFind, &ffd);
+#endif /* _WIN32 */
 	}
 
 	/* Free up resources. */
+#ifdef _WIN32
+	FindClose(hFind);
+#else
 	closedir(dh);
+#endif /* _WIN32 */
 	item->name = NULL;
 	item->selector = NULL;
 	gopher_item_free(item);
@@ -1077,20 +1140,13 @@ void gopher_item_print(gopher_item_t *item) {
 int file_exists(const char *fname) {
 #ifdef _WIN32
 	DWORD dwAttrib;
-	LPTSTR szPath;
 
 	/* Should we even check? */
 	if (fname == NULL)
 		return 0;
 
-	/* Convert the file path to UTF-16. */
-	szPath = utf16_mbstowcs(fname);
-	if (szPath == NULL)
-		return 0;
-
 	/* Get file attributes and return. */
-	dwAttrib = GetFileAttributes(szPath);
-	free(szPath);
+	dwAttrib = GetFileAttributes(fname);
 	return (dwAttrib != INVALID_FILE_ATTRIBUTES) &&
 		   !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY);
 #else
@@ -1112,20 +1168,13 @@ int file_exists(const char *fname) {
 int dir_exists(const char *path) {
 #ifdef _WIN32
 	DWORD dwAttrib;
-	LPTSTR szPath;
 
 	/* Should we even check? */
 	if (path == NULL)
 		return 0;
 
-	/* Convert the file path to UTF-16. */
-	szPath = utf16_mbstowcs(path);
-	if (szPath == NULL)
-		return 0;
-
 	/* Get file attributes and return. */
-	dwAttrib = GetFileAttributes(szPath);
-	free(szPath);
+	dwAttrib = GetFileAttributes(path);
 	return (dwAttrib != INVALID_FILE_ATTRIBUTES) &&
 		   (dwAttrib & FILE_ATTRIBUTE_DIRECTORY);
 #else
