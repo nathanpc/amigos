@@ -31,6 +31,7 @@
 		#define snprintf _snprintf
 	#endif
 #else
+	#include <errno.h>
 	#include <pthread.h>
 	#include <unistd.h>
 	#include <dirent.h>
@@ -76,10 +77,12 @@
 #ifdef _WIN32
 	#define SOCKERR   SOCKET_ERROR
 	#define sockclose closesocket
+	#define sockerrno WSAGetLastError()
 	typedef SOCKET sockfd_t;
 #else
 	#define SOCKERR   -1
 	#define sockclose close
+	#define sockerrno errno
 	typedef int sockfd_t;
 #endif /* _WIN32 */
 #ifndef INET6_ADDRSTRLEN
@@ -89,11 +92,17 @@
 /* Thread abstractions. */
 #ifdef _WIN32
 	#define THREAD_WAIT_TIMEOUT 1000
-	typedef HANDLE thread_hnd_t;
 	#define thread_ret unsigned int __stdcall
+	#define INVALID_THREAD NULL
+	typedef HANDLE thread_hnd_t;
 #else
-	typedef pthread_t thread_hnd_t;
 	#define thread_ret void*
+	typedef pthread_t thread_hnd_t;
+	#ifdef __linux__
+		#define INVALID_THREAD 0UL
+	#else
+		#define INVALID_THREAD NULL
+	#endif /* __linux__ */
 #endif /* _WIN32 */
 
 /**
@@ -248,7 +257,7 @@ int main(int argc, char **argv) {
 	}
 
 #ifdef _WIN32
-	// Initialize Winsock stuff.
+	/* Initialize Winsock stuff. */
 	wVersionRequested = MAKEWORD(2, 2);
 	if ((retval = WSAStartup(wVersionRequested, &wsaData)) != 0) {
 		printf("WSAStartup failed with error %i\n", retval);
@@ -266,7 +275,7 @@ int main(int argc, char **argv) {
 	for (i = 0; i < MAX_CONNECTIONS; i++) {
 		connections[i].sockfd = SOCKERR;
 		connections[i].status = 0;
-		connections[i].thread = NULL;
+		connections[i].thread = INVALID_THREAD;
 		connections[i].selector = NULL;
 	}
 
@@ -377,6 +386,7 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 
 	/* Set a receive timeout so that we don't block indefinitely. */
 	tv.tv_sec = RECV_TIMEOUT;
+	tv.tv_usec = 0;
 #ifdef _WIN32
 	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv,
 			sizeof(tv)) == SOCKERR) {
@@ -430,7 +440,7 @@ void server_stop(void) {
 		if (connections[i].sockfd != SOCKERR)
 			sockclose(connections[i].sockfd);
 		connections[i].sockfd = SOCKERR;
-		if (connections[i].thread != NULL) {
+		if (connections[i].thread != INVALID_THREAD) {
 #ifdef _WIN32
 			WaitForSingleObject(connections[i].thread, THREAD_WAIT_TIMEOUT);
 			CloseHandle(connections[i].thread);
@@ -438,7 +448,7 @@ void server_stop(void) {
 			pthread_join(connections[i].thread, NULL);
 #endif /* _WIN32 */
 		}
-		connections[i].thread = NULL;
+		connections[i].thread = INVALID_THREAD;
 	}
 }
 
@@ -455,7 +465,7 @@ void server_loop(int af, sockfd_t sockfd) {
 		/* Clean up finished requests. */
 		for (i = 0; i < MAX_CONNECTIONS; i++) {
 			if (connections[i].status & CONN_FINISHED) {
-				if (connections[i].thread != NULL) {
+				if (connections[i].thread != INVALID_THREAD) {
 #ifdef _WIN32
 					WaitForSingleObject(connections[i].thread,
 						THREAD_WAIT_TIMEOUT);
@@ -464,7 +474,7 @@ void server_loop(int af, sockfd_t sockfd) {
 					pthread_join(connections[i].thread, NULL);
 #endif /* _WIN32 */
 				}
-				connections[i].thread = NULL;
+				connections[i].thread = INVALID_THREAD;
 				connections[i].selector = NULL;
 				connections[i].status = 0;
 			}
@@ -487,7 +497,7 @@ void server_loop(int af, sockfd_t sockfd) {
 			socklen = sizeof(csa);
 			conn->sockfd = accept(sockfd, (struct sockaddr*)&csa, &socklen);
 			if (conn->sockfd == SOCKERR) {
-				if (running)
+				if (running && (sockerrno != EWOULDBLOCK))
 					perror("ERROR: Failed to accept connection");
 				conn->status = 0;
 				break;
