@@ -278,8 +278,9 @@ int main(int argc, char **argv) {
 	}
 #endif /* _WIN32 */
 
-	/* Register signal handler. */
+	/* Register signal handlers. */
 	signal(SIGINT, signal_handler);
+	signal(SIGPIPE, SIG_IGN);  /* Ensures SIGPIPE doesn't crash our server. */
 
 	/* Initialize constants and state variables. */
 	const_init();
@@ -746,9 +747,15 @@ int client_send_file(const client_conn_t *conn, const char *path) {
 	}
 
 	/* Pipe file contents straight to socket. */
-	while ((flen = fread(buf, sizeof(char), 256, fh)) > 0) {
+	while ((flen = fread(buf, sizeof(uint8_t), 256, fh)) > 0) {
 		if (send(conn->sockfd, buf, flen, 0) < 0) {
-			perror("ERROR: Failed to pipe contents of file to socket");
+			if (sockerrno == EPIPE) {
+				perror("Client closed connection before file transfer "
+					"finished");
+			} else {
+				perror("ERROR: Failed to pipe contents of file to socket");
+			}
+
 			ret = 0;
 			break;
 		}
