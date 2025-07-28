@@ -2,3 +2,4 @@ config.h
 godocs
 *.o
 amigos
+.DS_Store
