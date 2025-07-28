@@ -57,6 +57,10 @@
 #define DEFAULT_HOSTNAME "localhost"
 #define DEFAULT_PORT     LISTEN_PORT
 
+#define FILETYPES_CONF_PATH "filetypes.conf"
+#define DEFAULT_FILE_TYPE   '0'
+#define EXT_MAX_LEN         20
+
 #define LISTEN_BACKLOG   5
 #define INVALID_TYPE     '\0'
 #define INVALID_HOST     "null.host"
@@ -145,6 +149,8 @@ static char *invalid_host_c;
 /* Global state variables. */
 static int running;
 static char *docroot;
+static char **gopher_types;
+static uint16_t gopher_types_len;
 static sockfd_t server_socket;
 static client_conn_t connections[MAX_CONNECTIONS];
 
@@ -171,6 +177,13 @@ int client_send_item_simple(const client_conn_t *conn, char type,
 							const char *msg);
 int client_send_info(const client_conn_t *conn, const char *msg);
 int client_send_error(const client_conn_t *conn, const char *msg);
+
+/* Gopher file types utilities. */
+int gopher_types_load(const char *fname);
+int gopher_types_append(char type, const char *ext);
+void gopher_types_free(void);
+char gopher_types_infer(const char *fname);
+void gopher_types_dump(void);
 
 /* File system utilities. */
 int file_exists(const char *fname);
@@ -279,6 +292,15 @@ int main(int argc, char **argv) {
 		connections[i].selector = NULL;
 	}
 
+	/* Load Gopher file type information. */
+	gopher_types = NULL;
+	gopher_types_len = 0;
+	if (!gopher_types_load(FILETYPES_CONF_PATH))
+		retval = 1;
+#ifdef DEBUG
+	gopher_types_dump();
+#endif /* DEBUG */
+
 	/* Start server. */
 	server_socket = server_start(LISTEN_AF, LISTEN_ADDR, LISTEN_PORT);
 	if (server_socket == SOCKERR) {
@@ -294,6 +316,7 @@ finish:
 	if (running)
 		server_stop();
 	const_free();
+	gopher_types_free();
 #ifdef _WIN32
 	WSACleanup();
 
@@ -792,7 +815,7 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 		}
 
 		/* Build up Gopher item entry. */
-		item->type = bIsDir ? '1' : '0';
+		item->type = bIsDir ? '1' : gopher_types_infer(ffd.cFileName);
 		snprintf(name, 71, "%s%c", ffd.cFileName, bIsDir ? '/' : ' ');
 		item->name = name;
 		item->selector = ffd.cFileName;
@@ -809,7 +832,8 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 		}
 
 		/* Build up Gopher item entry. */
-		item->type = dirent->d_type == DT_DIR ? '1' : '0';
+		item->type = dirent->d_type == DT_DIR ? '1' :
+			gopher_types_infer(dirent->d_name);
 		snprintf(name, 71, "%s%c", dirent->d_name,
 			(dirent->d_type == DT_DIR ? '/' : ' '));
 		item->name = name;
@@ -1172,6 +1196,244 @@ void gopher_item_print(gopher_item_t *item) {
 	printf("Type:     '%c'\nName:     %s\nSelector: %s\nHostname: %s\nPort:    "
 		" %u\n", item->type, item->name, item->selector, item->hostname,
 		item->port);
+}
+
+/**
+ * =============================================================================
+ * === Gopher File Types =======================================================
+ * =============================================================================
+ */
+
+/**
+ * Loads Gopher file type information from a configuration file.
+ *
+ * @param fname Path to a Gopher file type information configuration file.
+ *
+ * @return TRUE if the operation was successful, FALSE otherwise.
+ */
+int gopher_types_load(const char *fname) {
+	FILE *fh;
+	int linenum;
+	char type;
+	char ext[EXT_MAX_LEN + 1];
+	uint8_t extlen;
+	char *buf;
+	char lastc;
+	int ci;
+	int ret;
+
+	/* Check if the file exists. */
+	if (!file_exists(fname)) {
+		printf("WARNING: Gopher file types information file '%s' wasn't found. "
+			"All non-directory entries will default to '%c' on directory "
+			"listings.\n", fname, DEFAULT_FILE_TYPE);
+		return 0;
+	}
+
+	/* Open file for reading. */
+	fh = fopen(fname, "r");
+	if (fh == NULL) {
+		printf("ERROR: Failed to open file %s for type association.\n", fname);
+		return 0;
+	}
+
+	/* Go through the file reading its properties. */
+	ret = 0;
+	linenum = 1;
+	lastc = '\n';
+	while ((ci = fgetc(fh)) != EOF) {
+		char c = (char)ci;
+
+		/* Have we just arrived at a new line? */
+		if (lastc == '\n') {
+			/* Cache file type. */
+			type = c;
+
+			/* Reset everything for the next extension. */
+			*ext = '\0';
+			extlen = 0;
+			buf = ext;
+
+			/* Jump to the first extension. */
+			while ((ci = fgetc(fh)) != EOF) {
+				c = (char)ci;
+				if ((c != '\t') && (c != ' '))
+					break;
+			}
+		}
+
+		/* Ignore CR. */
+		if (c == '\r')
+			goto next_char;
+
+		/* Build up extension. */
+		*buf++ = c;
+		extlen++;
+
+		/* Check if we have reached the end of this extension. */
+		if ((c == ' ') || (c == '\n')) {
+			/* Backtrack a bit do that we don't include whitespace. */
+			buf--;
+			*buf = '\0';
+
+			/* Append extension to types list. Skip empty extensions. */
+			if ((ext[0] != '\0') && !gopher_types_append(type, ext)) {
+				printf("ERROR: Failed to append extension '%s' from line %u "
+					"to file types list.\n", ext, linenum);
+				ret = 0;
+			}
+
+			/* Reset everything for the next extension. */
+			*ext = '\0';
+			extlen = 0;
+			buf = ext;
+		}
+
+		/* Increase the line counter if needed. */
+		if (c == '\n')
+			linenum++;
+
+		/* Check if we have reached the extension size limit. */
+		if (extlen >= EXT_MAX_LEN) {
+			buf--;
+			*buf = '\0';
+			printf("ERROR: Extension size limit of %u reached when parsing "
+				"extension '%s' at line %u of file types.\n", EXT_MAX_LEN, ext,
+				linenum);
+			ret = 0;
+			break;
+		}
+
+next_char:
+		lastc = c;
+	}
+
+	/* Ensure that we get the last extension in case of no newline at EOF. */
+	if ((extlen == 0) && (lastc != '\n')) {
+		*buf = '\0';
+		if (!gopher_types_append(type, ext)) {
+			printf("ERROR: Failed to append file's last extension '%s' from "
+				"line %u to file types list.\n", ext, linenum);
+			ret = 0;
+		}
+
+		*ext = '\0';
+		buf = ext;
+	}
+
+	/* Close file handle. */
+	fclose(fh);
+	return ret;
+}
+
+/**
+ * Appends an extension to the file type information array.
+ *
+ * @param type Gopher file type.
+ * @param ext  Extension to be associated with the file type.
+ *
+ * @return TRUE if the operation was successful, FALSE otherwise.
+ */
+int gopher_types_append(char type, const char *ext) {
+	char buf[EXT_MAX_LEN + 2];
+
+	/* Do an initial large allocation or an incremental reallocation. */
+	if (gopher_types == NULL) {
+		gopher_types = (char**)malloc(sizeof(char*));
+		if (gopher_types == NULL) {
+			perror("ERROR: Could not allocate initial item of file types list");
+			return 0;
+		}
+	} else {
+		void *tmp = realloc(gopher_types, (gopher_types_len + 1) *
+			sizeof(char*));
+		if (tmp == NULL) {
+			perror("ERROR: Could not reallocate file types list");
+			return 0;
+		}
+		gopher_types = (char**)tmp;
+	}
+
+	/* Add file type to extension string. */
+	snprintf(buf, EXT_MAX_LEN + 1, "%c%s", type, ext);
+
+	/* Append extension to list and increase length counter. */
+	gopher_types[gopher_types_len] = strdup(buf);
+	gopher_types_len++;
+
+	return 1;
+}
+
+/**
+ * Frees up any resources used for storing Gopher file type information.
+ */
+void gopher_types_free(void) {
+	uint16_t i;
+
+	/* Free each type element. */
+	for (i = 0; i < gopher_types_len; i++) {
+		if (gopher_types[i] != NULL)
+			free(gopher_types[i]);
+	}
+
+	/* Free the array itself. */
+	if (gopher_types != NULL)
+		free(gopher_types);
+	gopher_types = NULL;
+	gopher_types_len = 0;
+}
+
+/**
+ * Infers the Gopher file type character based on the file name.
+ *
+ * @param fname File name to be used for inference.
+ *
+ * @return Guessed Gopher file type or DEFAULT_FILE_TYPE if we failed to guess.
+ */
+char gopher_types_infer(const char *fname) {
+	const char *ext;
+	uint16_t i;
+
+	/* Do we even have our file type array initialized to infer anything? */
+	if (gopher_types == NULL)
+		return DEFAULT_FILE_TYPE;
+
+	/* Get the file extension. */
+	ext = strrchr(fname, '.');
+	if (ext == NULL)
+		return DEFAULT_FILE_TYPE;
+	ext++;
+
+	/* Check if the file extension is anywhere in the file type list. */
+	printf("testing ext for %s (%s)\n", fname, ext);
+	for (i = 0; i < gopher_types_len; i++) {
+		if (strcmp(ext, gopher_types[i] + 1) == 0) {
+			printf("ext for %s is %s\n", fname, gopher_types[i]);
+			return *gopher_types[i];
+		}
+	}
+
+	return DEFAULT_FILE_TYPE;
+}
+
+/**
+ * Dumps the contents of the Gopher file type information array for debugging
+ * pursposes.
+ */
+void gopher_types_dump(void) {
+	uint16_t i;
+
+	/* Do we even have any? */
+	if (gopher_types == NULL) {
+		printf("No Gopher file type associations.\n");
+		return;
+	}
+
+	/* Dump associations array. */
+	printf("Gopher file type associations (%u):", gopher_types_len);
+	for (i = 0; i < gopher_types_len; i++)
+		printf(" %s", gopher_types[i]);
+	printf("\n");
 }
 
 /**
