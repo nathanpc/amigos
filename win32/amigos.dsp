@@ -84,6 +84,14 @@ LINK32=link.exe
 
 # Name "amigos - Win32 Release"
 # Name "amigos - Win32 Debug"
+# Begin Group "Resources"
+
+# PROP Default_Filter ""
+# Begin Source File
+
+SOURCE=..\filetypes.conf
+# End Source File
+# End Group
 # Begin Source File
 
 SOURCE=..\amigos.c

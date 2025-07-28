@@ -83,6 +83,10 @@
 	#define sockclose closesocket
 	#define sockerrno WSAGetLastError()
 	typedef SOCKET sockfd_t;
+
+	#ifndef EWOULDBLOCK
+		#define EWOULDBLOCK WSAEWOULDBLOCK
+	#endif /* !EWOULDBLOCK */
 #else
 	#define SOCKERR   -1
 	#define sockclose close
@@ -280,7 +284,9 @@ int main(int argc, char **argv) {
 
 	/* Register signal handlers. */
 	signal(SIGINT, signal_handler);
+#ifndef _WIN32
 	signal(SIGPIPE, SIG_IGN);  /* Ensures SIGPIPE doesn't crash our server. */
+#endif /* !_WIN32 */
 
 	/* Initialize constants and state variables. */
 	const_init();
@@ -749,12 +755,16 @@ int client_send_file(const client_conn_t *conn, const char *path) {
 	/* Pipe file contents straight to socket. */
 	while ((flen = fread(buf, sizeof(uint8_t), 256, fh)) > 0) {
 		if (send(conn->sockfd, buf, flen, 0) < 0) {
+#ifdef _WIN32
+			perror("ERROR: Failed to pipe contents of file to socket");
+#else
 			if (sockerrno == EPIPE) {
 				perror("Client closed connection before file transfer "
 					"finished");
 			} else {
 				perror("ERROR: Failed to pipe contents of file to socket");
 			}
+#endif /* _WIN32 */
 
 			ret = 0;
 			break;
