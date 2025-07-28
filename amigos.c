@@ -483,11 +483,15 @@ void server_stop(void) {
  */
 void server_loop(int af, sockfd_t sockfd) {
 	while (running) {
+		int numavail;
 		int i;
 
 		/* Clean up finished requests. */
+		numavail = 0;
 		for (i = 0; i < MAX_CONNECTIONS; i++) {
+			/* Looks like a request that has served its purpose. */
 			if (connections[i].status & CONN_FINISHED) {
+				/* Join thread if needed. */
 				if (connections[i].thread != INVALID_THREAD) {
 #ifdef _WIN32
 					WaitForSingleObject(connections[i].thread,
@@ -497,10 +501,23 @@ void server_loop(int af, sockfd_t sockfd) {
 					pthread_join(connections[i].thread, NULL);
 #endif /* _WIN32 */
 				}
+
+				/* Clean up worker state. */
 				connections[i].thread = INVALID_THREAD;
 				connections[i].selector = NULL;
 				connections[i].status = 0;
 			}
+
+			/* Count number of available workers. */
+			if (connections[i].status == 0)
+				numavail++;
+		}
+
+		/* Check if we are overloaded. */
+		if (numavail == 0) {
+			printf("WARNING: No workers available to accept new connections."
+				"\n");
+			continue;
 		}
 
 		/* Check if we can accept new connections at the moment. */
@@ -1405,12 +1422,9 @@ char gopher_types_infer(const char *fname) {
 	ext++;
 
 	/* Check if the file extension is anywhere in the file type list. */
-	printf("testing ext for %s (%s)\n", fname, ext);
 	for (i = 0; i < gopher_types_len; i++) {
-		if (strcmp(ext, gopher_types[i] + 1) == 0) {
-			printf("ext for %s is %s\n", fname, gopher_types[i]);
+		if (strcmp(ext, gopher_types[i] + 1) == 0)
 			return *gopher_types[i];
-		}
 	}
 
 	return DEFAULT_FILE_TYPE;
