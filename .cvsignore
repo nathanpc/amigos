@@ -3,3 +3,4 @@ godocs
 *.o
 amigos
 .DS_Store
+*.dSYM
