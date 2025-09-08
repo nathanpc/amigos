@@ -44,6 +44,28 @@ before trying to compile this project you **MUST** install the
 This SDK, specifically the Internet Explorer SDK, contains updated definitions
 of sockets-related functions and types.
 
+If you wish to compile the application from the command line using Visual Studio
+C++ 6 tools, you can use the following commands:
+
+```batch
+"C:\Program Files\Microsoft Visual Studio\VC98\Bin\VCVARS32.BAT"
+cl.exe /MTd /W3 /Gm /GX /ZI /Od /I ".\win32\shims" ^
+	/I "C:\Program Files\Microsoft SDK\include" /D "WIN32" /D "_DEBUG" ^
+	/D "_CONSOLE" /D "_MBCS" /D "DEBUG" /FD /GZ amigos.c ^
+	/link shlwapi.lib ws2_32.lib /subsystem:console /debug /machine:I386
+```
+
+If you're using a newer version of Visual Studio, 2010 in this case, the command
+would instead be the following:
+
+```batch
+"C:\Program Files\Microsoft Visual Studio 10.0\VC\vcvarsall.bat" x86
+cl.exe /MTd /W3 /Gm /EHsc /ZI /Od /I ".\win32\shims" /D "WIN32" /D "_DEBUG" ^
+	/D "_CONSOLE" /D "_MBCS" /D "DEBUG" /D "_CRT_SECURE_NO_WARNINGS" /wd4996 ^
+	/FD /RTC1 amigos.c /link shlwapi.lib ws2_32.lib /subsystem:console /debug ^
+	/machine:I386
+```
+
 ### Detecting Memory Leaks
 
 Since this is a server that's supposed to be running for many months unattended,
