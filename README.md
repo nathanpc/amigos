@@ -15,7 +15,7 @@ meant to simplify the source code while maintaining flexibility. In order to
 compile the application the following should be enough for a UNIX system:
 
 ```sh
-gcc -ansi -std=c89 -Wall -pedantic amigos.c -o amigos
+gcc -ansi -std=c89 -Wall -pedantic -pthread amigos.c -o amigos
 ```
 
 If you're compiling this under Linux using GCC, you should set the C standard
