@@ -16,12 +16,14 @@
 	#endif /* DEBUG */
 #endif /* _WIN32 */
 
+#include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <string.h>
 #include <signal.h>
+#include <time.h>
 
 #ifdef _WIN32
 	#include <winsock2.h>
@@ -113,6 +115,15 @@
 	#endif /* __linux__ */
 #endif /* _WIN32 */
 
+/* Log levels. */
+typedef enum {
+	LOG_CRIT = 0,
+	LOG_ERROR,
+	LOG_WARNING,
+	LOG_NOTICE,
+	LOG_INFO
+} log_level_t;
+
 /**
  * Abstraction of a Gopher item in a listing.
  */
@@ -196,6 +207,12 @@ size_t path_concat(char **buf, const char *sep, ...);
 int path_sanitize(char *path);
 int path_normalize(char *path, char fromsep, char tosep);
 
+/* Logging and debugging. */
+void log_vprintf(log_level_t level, const char *format, va_list ap);
+void log_printf(log_level_t level, const char *format, ...);
+void log_syserr(log_level_t level, const char *format, ...);
+void log_sockerr(log_level_t level, const char *format, ...);
+
 /* Misc. */
 void const_init(void);
 void const_free(void);
@@ -269,7 +286,7 @@ int main(int argc, char **argv) {
 
 	/* Check if document root folder actually exists. */
 	if (!dir_exists(docroot)) {
-		printf("ERROR: Document root path '%s' doesn't exist.\n", docroot);
+		log_printf(LOG_CRIT, "Document root path '%s' doesn't exist.", docroot);
 		return 1;
 	}
 
@@ -277,7 +294,7 @@ int main(int argc, char **argv) {
 	/* Initialize Winsock stuff. */
 	wVersionRequested = MAKEWORD(2, 2);
 	if ((retval = WSAStartup(wVersionRequested, &wsaData)) != 0) {
-		printf("WSAStartup failed with error %i\n", retval);
+		log_printf(LOG_CRIT, "WSAStartup failed with error %i", retval);
 		return retval;
 	}
 #endif /* _WIN32 */
@@ -380,14 +397,14 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 
 	/* Ensure that we don't have a server already running. */
 	if (running != 0) {
-		printf("ERROR: Tried to start a server while already running.\n");
+		log_printf(LOG_CRIT, "Tried to start a server while already running.");
 		return SOCKERR;
 	}
 
 	/* Get a socket file descriptor. */
 	sockfd = socket(af == AF_INET ? PF_INET : PF_INET6, SOCK_STREAM, 0);
 	if (sockfd == SOCKERR) {
-		perror("ERROR: Failed to get a socket file descriptor");
+		log_sockerr(LOG_CRIT, "Failed to get a socket file descriptor");
 		return SOCKERR;
 	}
 
@@ -401,7 +418,7 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 		struct sockaddr_in6 *in6addr = (struct sockaddr_in6*)&sa;
 		in6addr->sin6_family = af;
 		in6addr->sin6_port = htons(port);
-		printf("ERROR: IPv6 not yet implemented.\n");
+		log_printf(LOG_CRIT, "IPv6 not yet implemented.");
 		return SOCKERR;
 	}
 
@@ -409,7 +426,7 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 	flag = 1;
 	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &flag,
 			sizeof(flag)) == SOCKERR) {
-		perror("ERROR: Failed to set socket address reuse");
+		log_sockerr(LOG_CRIT, "Failed to set socket address reuse");
 		sockclose(sockfd);
 		return SOCKERR;
 	}
@@ -424,26 +441,26 @@ sockfd_t server_start(int af, const char *addr, uint16_t port) {
 	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv,
 			sizeof(tv)) == SOCKERR) {
 #endif /* _WIN32 */
-		perror("ERROR: Failed to set socket receive timeout");
+		log_sockerr(LOG_CRIT, "Failed to set socket receive timeout");
 		sockclose(sockfd);
 		return SOCKERR;
 	}
 
 	/* Bind address to socket. */
 	if (bind(sockfd, (struct sockaddr*)&sa, addrlen) == SOCKERR) {
-		perror("ERROR: Failed binding to socket");
+		log_sockerr(LOG_CRIT, "Failed binding to socket");
 		sockclose(sockfd);
 		return SOCKERR;
 	}
 
 	/* Start listening on our desired socket. */
 	if (listen(sockfd, LISTEN_BACKLOG) == SOCKERR) {
-		perror("ERROR: Failed to listen on socket");
+		log_sockerr(LOG_CRIT, "Failed to listen on socket");
 		sockclose(sockfd);
 		return SOCKERR;
 	}
 
-	printf("Server running on %s:%u\n", addr, port);
+	log_printf(LOG_INFO, "Server running on %s:%u", addr, port);
 	running = 1;
 	return sockfd;
 }
@@ -455,10 +472,10 @@ void server_stop(void) {
 	int i;
 
 	/* Stop the server. */
-	printf("Stopping the server...\n");
+	log_printf(LOG_INFO, "Stopping the server...");
 	running = 0;
 	if ((server_socket != SOCKERR) && (sockclose(server_socket) == SOCKERR))
-		perror("ERROR: Failed to close server socket");
+		log_sockerr(LOG_ERROR, "Failed to close server socket");
 	server_socket = SOCKERR;
 
 	/* Close all client connections. */
@@ -522,8 +539,8 @@ void server_loop(int af, sockfd_t sockfd) {
 
 		/* Check if we are overloaded. */
 		if (numavail == 0) {
-			printf("WARNING: No workers available to accept new connections."
-				"\n");
+			log_printf(LOG_WARNING, "No workers available to accept new "
+				"connections.");
 			continue;
 		}
 
@@ -545,7 +562,7 @@ void server_loop(int af, sockfd_t sockfd) {
 			conn->sockfd = accept(sockfd, (struct sockaddr*)&csa, &socklen);
 			if (conn->sockfd == SOCKERR) {
 				if (running && (sockerrno != EWOULDBLOCK))
-					perror("ERROR: Failed to accept connection");
+					log_sockerr(LOG_ERROR, "Failed to accept connection");
 				conn->status = 0;
 				break;
 			}
@@ -553,9 +570,9 @@ void server_loop(int af, sockfd_t sockfd) {
 
 			/* Get client address string and announce connection. */
 			if (inet_addr_str(af, &csa, addrstr) == NULL) {
-				perror("ERROR: Failed to get client address string");
+				log_sockerr(LOG_ERROR, "Failed to get client address string");
 			} else {
-				printf("Client connected from %s\n", addrstr);
+				log_printf(LOG_INFO, "Client connected from %s", addrstr);
 			}
 
 			/* Process the client's request. */
@@ -568,7 +585,8 @@ void server_loop(int af, sockfd_t sockfd) {
 				conn);
 #endif /* _WIN32 */
 			if (threrr) {
-				printf("ERROR: Failed to create request processing thread\n");
+				log_printf(LOG_ERROR, "Failed to create request processing "
+					"thread");
 				sockclose(conn->sockfd);
 				conn->status = 0;
 				break;
@@ -603,14 +621,14 @@ thread_ret server_process_request(void *data) {
 	/* Read the selector from client's request. */
 	if ((len = recv(conn->sockfd, selector, 255, 0)) < 0) {
 		if (running)
-			perror("ERROR: Failed to receive selector");
+			log_sockerr(LOG_ERROR, "Failed to receive selector");
 		goto close_conn;
 	}
 	selector[len] = '\0';
 
 	/* Ensure the request wasn't too long. */
 	if (len >= 255) {
-		printf("ERROR: Selector unusually long, closing connection.\n");
+		log_printf(LOG_WARNING, "Selector unusually long, closing connection.");
 		client_send_error(conn, "Selector string longer than 255 characters");
 		goto close_conn;
 	}
@@ -626,14 +644,14 @@ thread_ret server_process_request(void *data) {
 
 	/* Sanitize selector before using it. */
 	path_sanitize(selector);
-	printf("Client requested selector '%s'\n", selector);
+	log_printf(LOG_INFO, "Client requested selector '%s'", selector);
 
 	/* Build local file request path from selector. */
 	if (*selector == '\0') {
 		fpath = strdup(docroot);
 	} else if (path_concat(&fpath, &sep, docroot, selector,
 			NULL) == 0) {
-		printf("ERROR: Failed to build request path for selector %s\n",
+		log_printf(LOG_ERROR, "Failed to build request path for selector %s",
 			selector);
 		goto close_conn;
 	}
@@ -709,7 +727,7 @@ const char* inet_addr_str(int af, void *addr, char *buf) {
 	if (af == AF_INET) {
 		return strcpy(buf, inet_ntoa(((struct sockaddr_in*)addr)->sin_addr));
 	} else {
-		printf("ERROR: IPv6 not yet implemented in inet_addr_str\n");
+		log_printf(LOG_ERROR, "IPv6 not yet implemented in inet_addr_str");
 		return NULL;
 	}
 #else
@@ -747,8 +765,8 @@ int client_send_file(const client_conn_t *conn, const char *path) {
 	ret = 1;
 	fh = fopen(path, "rb");
 	if (fh == NULL) {
-		printf("ERROR: Failed to open file %s for request selector '%s'\n",
-			path, conn->selector);
+		log_printf(LOG_ERROR, "Failed to open file %s for request selector "
+			"'%s'", path, conn->selector);
 		return 0;
 	}
 
@@ -756,13 +774,14 @@ int client_send_file(const client_conn_t *conn, const char *path) {
 	while ((flen = fread(buf, sizeof(uint8_t), 256, fh)) > 0) {
 		if (send(conn->sockfd, buf, flen, 0) < 0) {
 #ifdef _WIN32
-			perror("ERROR: Failed to pipe contents of file to socket");
+			log_sockerr(LOG_ERROR, "Failed to pipe contents of file to socket");
 #else
 			if (sockerrno == EPIPE) {
-				perror("Client closed connection before file transfer "
-					"finished");
+				log_sockerr(LOG_WARNING, "Client closed connection before file "
+					"transfer finished");
 			} else {
-				perror("ERROR: Failed to pipe contents of file to socket");
+				log_sockerr(LOG_ERROR, "Failed to pipe contents of file to "
+					"socket");
 			}
 #endif /* _WIN32 */
 
@@ -806,13 +825,13 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 	bHasNext = 1;
 	hFind = FindFirstFile(szDir, &ffd);
 	if (hFind == INVALID_HANDLE_VALUE) {
-		printf("ERROR: Failed to open directory for listing\n");
+		log_syserr(LOG_ERROR, "Failed to open directory for listing");
 		return 0;
 	}
 #else
 	dh = opendir(path);
 	if (dh == NULL) {
-		perror("ERROR: Failed to open directory for listing");
+		log_syserr(LOG_ERROR, "Failed to open directory for listing");
 		return 0;
 	}
 #endif /* _WIN32 */
@@ -920,8 +939,8 @@ int client_send_gophermap(const client_conn_t *conn, const char *path) {
 	ret = 1;
 	fh = fopen(path, "r");
 	if (fh == NULL) {
-		printf("ERROR: Failed to open gophermap for request selector '%s'\n",
-			conn->selector);
+		log_printf(LOG_ERROR, "Failed to open gophermap for request selector "
+			"'%s'", conn->selector);
 		return 0;
 	}
 
@@ -967,7 +986,8 @@ int client_send_gophermap(const client_conn_t *conn, const char *path) {
 		/* Parse item line. */
 		item = gopher_item_parse(buf);
 		if (item == NULL) {
-			printf("ERROR: Failed to parse line %u of %s\n", linenum, path);
+			log_printf(LOG_ERROR, "Failed to parse line %u of %s", linenum,
+				path);
 			client_send_error(conn, "Failed to parse this line of gophermap");
 			ret = 0;
 			continue;
@@ -1005,8 +1025,8 @@ int client_send_item(const client_conn_t *conn, const gopher_item_t *item) {
 		char sep = '/';
 		if (path_concat(&selector, &sep, conn->selector, item->selector,
 				NULL) == 0) {
-			printf("ERROR: Failed to concatenate base selector '%s' with "
-				"relative selector '%s'\n", conn->selector, item->selector);
+			log_printf(LOG_ERROR, "Failed to concatenate base selector '%s' "
+				"with relative selector '%s'", conn->selector, item->selector);
 			return 0;
 		}
 	}
@@ -1025,14 +1045,14 @@ int client_send_item(const client_conn_t *conn, const gopher_item_t *item) {
 
 	/* Check if the string buffer was big enough. */
 	if (len >= 256) {
-		printf("ERROR: Entry line too long (>%lu chars) for item '%s'.\n",
+		log_printf(LOG_ERROR, "Entry line too long (>%lu chars) for item '%s'.",
 			sizeof(buf), item->name);
 		return 0;
 	}
 
 	/* Send out the entry line. */
 	if (send(conn->sockfd, buf, len, 0) < 0) {
-		perror("ERROR: Failed to send entry item line");
+		log_sockerr(LOG_ERROR, "Failed to send entry item line");
 		return 0;
 	}
 
@@ -1258,16 +1278,17 @@ int gopher_types_load(const char *fname) {
 
 	/* Check if the file exists. */
 	if (!file_exists(fname)) {
-		printf("WARNING: Gopher file types information file '%s' wasn't found. "
-			"All non-directory entries will default to '%c' on directory "
-			"listings.\n", fname, DEFAULT_FILE_TYPE);
+		log_printf(LOG_WARNING, "Gopher file types information file '%s' "
+			"wasn't found. All non-directory entries will default to '%c' on "
+			"directory listings.", fname, DEFAULT_FILE_TYPE);
 		return 0;
 	}
 
 	/* Open file for reading. */
 	fh = fopen(fname, "r");
 	if (fh == NULL) {
-		printf("ERROR: Failed to open file %s for type association.\n", fname);
+		log_printf(LOG_ERROR, "Failed to open file %s for type association.",
+			fname);
 		return 0;
 	}
 
@@ -1312,8 +1333,8 @@ int gopher_types_load(const char *fname) {
 
 			/* Append extension to types list. Skip empty extensions. */
 			if ((ext[0] != '\0') && !gopher_types_append(type, ext)) {
-				printf("ERROR: Failed to append extension '%s' from line %u "
-					"to file types list.\n", ext, linenum);
+				log_printf(LOG_ERROR, "Failed to append extension '%s' from "
+					"line %u to file types list.", ext, linenum);
 				ret = 0;
 			}
 
@@ -1331,9 +1352,9 @@ int gopher_types_load(const char *fname) {
 		if (extlen >= EXT_MAX_LEN) {
 			buf--;
 			*buf = '\0';
-			printf("ERROR: Extension size limit of %u reached when parsing "
-				"extension '%s' at line %u of file types.\n", EXT_MAX_LEN, ext,
-				linenum);
+			log_printf(LOG_ERROR, "Extension size limit of %u reached when "
+				"parsing extension '%s' at line %u of file types.\n",
+				EXT_MAX_LEN, ext, linenum);
 			ret = 0;
 			break;
 		}
@@ -1346,8 +1367,8 @@ next_char:
 	if ((extlen == 0) && (lastc != '\n')) {
 		*buf = '\0';
 		if (!gopher_types_append(type, ext)) {
-			printf("ERROR: Failed to append file's last extension '%s' from "
-				"line %u to file types list.\n", ext, linenum);
+			log_printf(LOG_ERROR, "Failed to append file's last extension '%s' "
+				"from line %u to file types list.", ext, linenum);
 			ret = 0;
 		}
 
@@ -1375,14 +1396,15 @@ int gopher_types_append(char type, const char *ext) {
 	if (gopher_types == NULL) {
 		gopher_types = (char**)malloc(sizeof(char*));
 		if (gopher_types == NULL) {
-			perror("ERROR: Could not allocate initial item of file types list");
+			log_syserr(LOG_CRIT, "Could not allocate initial item of file "
+				"types list");
 			return 0;
 		}
 	} else {
 		void *tmp = realloc(gopher_types, (gopher_types_len + 1) *
 			sizeof(char*));
 		if (tmp == NULL) {
-			perror("ERROR: Could not reallocate file types list");
+			log_syserr(LOG_CRIT, "Could not reallocate file types list");
 			return 0;
 		}
 		gopher_types = (char**)tmp;
@@ -1456,7 +1478,7 @@ void gopher_types_dump(void) {
 
 	/* Do we even have any? */
 	if (gopher_types == NULL) {
-		printf("No Gopher file type associations.\n");
+		log_printf(LOG_WARNING, "No Gopher file type associations.");
 		return;
 	}
 
@@ -1653,6 +1675,166 @@ size_t path_concat(char **buf, const char *sep, ...) {
 	va_end(ap);
 
 	return len;
+}
+
+/**
+ * =============================================================================
+ * === Logging and Debugging ===================================================
+ * =============================================================================
+ */
+
+/**
+ * Prints out logging information with an associated log level tag using the
+ * printf function style.
+ *
+ * @param level  Severity of the logged information.
+ * @param format Format of the desired output without the tag.
+ * @param ap     Additional variables to be populated.
+ */
+void log_vprintf(log_level_t level, const char *format, va_list ap) {
+	char ts[22];
+
+	/* Time and date. */
+	time_t tm = time(NULL);
+	struct tm* gmt = gmtime(&tm);
+	if (strftime(ts, 22, "%Y-%m-%dT%H:%M:%SZ", gmt) == 0)
+		ts[20] = '?';
+	ts[21] = '\0';
+
+	/* Print the log level tag. */
+	switch (level) {
+		case LOG_CRIT:
+			printf("%s [CRITICAL] ", ts);
+			break;
+		case LOG_ERROR:
+			printf("%s [ERROR] ", ts);
+			break;
+		case LOG_WARNING:
+			printf("%s [WARNING] ", ts);
+			break;
+		case LOG_NOTICE:
+			printf("%s [NOTICE] ", ts);
+			break;
+		case LOG_INFO:
+			printf("%s [INFO] ", ts);
+			break;
+		default:
+			printf("%s [UNKNOWN] ", ts);
+			break;
+	}
+
+	/* Print the actual message. */
+	vprintf(format, ap);
+}
+
+/**
+ * Prints out logging information with an associated log level tag using the
+ * printf function style. Automatically appends a newline at the end of the
+ * message.
+ *
+ * @param level  Severity of the logged information.
+ * @param format Format of the desired output without the tag.
+ * @param ...    Additional variables to be populated.
+ */
+void log_printf(log_level_t level, const char *format, ...) {
+	va_list args;
+
+	/* Print the log message. */
+	va_start(args, format);
+	log_vprintf(level, format, args);
+	va_end(args);
+	
+	/* Ensure we finish with a newline. */
+	printf("\n");
+}
+
+/**
+ * Prints out logging information related to system errors that set the errno
+ * variable. System error message is automatically appended at the end.
+ *
+ * @param level  Severity of the logged information.
+ * @param format Format of the desired output without the tag or system message.
+ * @param ...    Additional variables to be populated.
+ */
+void log_syserr(log_level_t level, const char *format, ...) {
+	va_list args;
+	int err;
+
+#ifdef _WIN32
+	LPTSTR szErrorMessage;
+
+	/* Get the descriptive error message from the system. */
+	err = GetLastError();
+	if (!FormatMessage(FORMAT_MESSAGE_FLAGS, NULL, err, FORMAT_MESSAGE_LANG,
+					   (LPTSTR)&szErrorMessage, 0, NULL)) {
+		szErrorMessage = strdup("FormatMessage failed");
+	}
+
+	/* Print the application's error message. */
+	va_start(args, format);
+	log_vprintf(level, format, args);
+	va_end(args);
+
+	/* Print the system error message. */
+	printf(": System Error (%d) %ls\n", err, szErrorMessage);
+
+	/* Free up any resources. */
+	LocalFree(szErrorMessage);
+#else
+	/* Print the application's error message. */
+	err = errno;
+	va_start(args, format);
+	log_vprintf(level, format, args);
+	va_end(args);
+
+	/* Print the system error message. */
+	printf(": (%d) %s\n", err, strerror(err));
+#endif /* _WIN32 */
+}
+
+/**
+ * Prints out logging information related to system errors that set the errno
+ * variable whenever dealing with sockets. System error message is automatically
+ * appended at the end.
+ *
+ * @param level  Severity of the logged information.
+ * @param format Format of the desired output without the tag or system message.
+ * @param ...    Additional variables to be populated.
+ */
+void log_sockerr(log_level_t level, const char *format, ...) {
+	va_list args;
+	int err;
+
+#ifdef _WIN32
+	LPTSTR szErrorMessage;
+
+	/* Get the descriptive error message from the system. */
+	err = WSAGetLastError();
+	if (!FormatMessage(FORMAT_MESSAGE_FLAGS, NULL, err, FORMAT_MESSAGE_LANG,
+					   (LPTSTR)&szErrorMessage, 0, NULL)) {
+		szErrorMessage = strdup("FormatMessage failed");
+	}
+
+	/* Print the application's error message. */
+	va_start(args, format);
+	log_vprintf(level, format, args);
+	va_end(args);
+
+	/* Print the system error message. */
+	printf(": WSAError (%d) %ls\n", err, szErrorMessage);
+
+	/* Free up any resources. */
+	LocalFree(szErrorMessage);
+#else
+	/* Print the application's error message. */
+	err = errno;
+	va_start(args, format);
+	log_vprintf(level, format, args);
+	va_end(args);
+
+	/* Print the system error message. */
+	printf(": (%d) %s\n", err, strerror(err));
+#endif /* _WIN32 */
 }
 
 /**
