@@ -1,0 +1,14 @@
+# Configuration files.
+config.h
+
+# Document root.
+godocs
+
+# Compilation artifacts.
+amigos
+*.o
+*.dSYM
+bin/
+
+# Misc.
+.DS_Store
