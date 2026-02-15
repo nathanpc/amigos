@@ -76,6 +76,18 @@
 	#endif /* _WIN32 */
 #endif /* PATH_SEPARATOR */
 
+#ifdef _WIN32
+	/* Standard values for Win32's FormatMessage function. */
+	#ifndef FORMAT_MESSAGE_FLAGS
+		#define FORMAT_MESSAGE_FLAGS (FORMAT_MESSAGE_ALLOCATE_BUFFER | \
+			FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS)
+	#endif /* FORMAT_MESSAGE_FLAGS */
+
+	#ifndef FORMAT_MESSAGE_LANG
+		#define FORMAT_MESSAGE_LANG MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT)
+	#endif /* FORMAT_MESSAGE_LANG */
+#endif /* _WIN32 */
+
 /* Include configuration. */
 #include "config.h"
 
