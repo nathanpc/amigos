@@ -52,12 +52,8 @@
 /* Some common definitions and defaults. */
 #define LISTEN_AF        AF_INET
 #define LISTEN_ADDR      "0.0.0.0"
-#define LISTEN_PORT      70
 #define MAX_CONNECTIONS  10
 #define RECV_TIMEOUT     3
-
-#define DEFAULT_HOSTNAME "localhost"
-#define DEFAULT_PORT     LISTEN_PORT
 
 #define FILETYPES_CONF_PATH "filetypes.conf"
 #define DEFAULT_FILE_TYPE   '0'
@@ -87,9 +83,6 @@
 		#define FORMAT_MESSAGE_LANG MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT)
 	#endif /* FORMAT_MESSAGE_LANG */
 #endif /* _WIN32 */
-
-/* Include configuration. */
-#include "config.h"
 
 /* Socket abstractions. */
 #ifdef _WIN32
@@ -176,6 +169,8 @@ static char *invalid_host_c;
 /* Global state variables. */
 static int running;
 static char *docroot;
+static char *default_hostname;
+static uint16_t default_port;
 static char **gopher_types;
 static uint16_t gopher_types_len;
 static sockfd_t server_socket;
@@ -289,12 +284,27 @@ int main(int argc, char **argv) {
 	SetConsoleCtrlHandler(&ConsoleSignalHandler, TRUE);
 #endif /* _WIN32 */
 
-	/* Check if we have a document root folder. */
-	if (argc < 2) {
-		printf("usage: %s docroot\n", argv[0]);
+	/* Check if we have the correct number of arguments. */
+	if (argc != 4) {
+		printf("usage: %s hostname port docroot\n\n", argv[0]);
+		puts("arguments:");
+		puts("   hostname   Default hostname to be used in gophermaps");
+		puts("   port       Default port to be used in gophermaps");
+		puts("   docroot    Location of the gopherhole root folder");
 		return 1;
 	}
-	docroot = argv[1];
+
+	/* Gather arguments into global variables. */
+	default_hostname = argv[1];
+	default_port = (uint16_t)atoi(argv[2]);
+	docroot = argv[3];
+
+	/* Check if the port number is valid. */
+	if (default_port == 0) {
+		log_printf(LOG_CRIT, "Invalid port number %u (%s).\n", default_port,
+			argv[2]);
+		return 1;
+	}
 
 	/* Check if document root folder actually exists. */
 	if (!dir_exists(docroot)) {
@@ -338,7 +348,7 @@ int main(int argc, char **argv) {
 #endif /* DEBUG */
 
 	/* Start server. */
-	server_socket = server_start(LISTEN_AF, LISTEN_ADDR, LISTEN_PORT);
+	server_socket = server_start(LISTEN_AF, LISTEN_ADDR, default_port);
 	if (server_socket == SOCKERR) {
 		retval = 1;
 		goto finish;
@@ -858,8 +868,8 @@ int client_send_dir(const client_conn_t *conn, const char *path, int header) {
 
 	/* Set common Gopher item parameters. */
 	item = gopher_item_new();
-	item->hostname = strdup(DEFAULT_HOSTNAME);
-	item->port = DEFAULT_PORT;
+	item->hostname = default_hostname;
+	item->port = default_port;
 
 	/* Read directory contents. */
 #ifdef _WIN32
@@ -1047,7 +1057,7 @@ int client_send_item(const client_conn_t *conn, const gopher_item_t *item) {
 	len = snprintf(buf, 256, "%c%s\t%s\t%s\t%u\r\n", item->type,
 		item->name == NULL ? "" : item->name,
 		selector == NULL ? item->selector ? item->selector : "" : selector,
-		item->hostname == NULL ? DEFAULT_HOSTNAME : item->hostname,
+		item->hostname == NULL ? default_hostname : item->hostname,
 		item->port);
 
 	/* Free up used selector string. */
@@ -1171,8 +1181,11 @@ void gopher_item_free(gopher_item_t *item) {
 		free(item->name);
 	if (item->selector != NULL)
 		free(item->selector);
-	if ((item->hostname != invalid_host_c) && (item->hostname != NULL))
+	if ((item->hostname != invalid_host_c) &&
+			(item->hostname != default_hostname) &&
+			(item->hostname != NULL)) {
 		free(item->hostname);
+	}
 	free(item);
 }
 
@@ -1198,8 +1211,8 @@ gopher_item_t* gopher_item_parse(const char *line) {
 		return NULL;
 
 	/* Populate it with some defaults. */
-	item->hostname = strdup(DEFAULT_HOSTNAME);
-	item->port = DEFAULT_PORT;
+	item->hostname = default_hostname;
+	item->port = default_port;
 
 	/* Get item type. */
 	tmp = line;
@@ -1234,7 +1247,7 @@ gopher_item_t* gopher_item_parse(const char *line) {
 		cbuf++;
 	}
 	*cbuf = '\0';
-	if (item->hostname != NULL)
+	if ((item->hostname != NULL) && (item->hostname != default_hostname))
 		free(item->hostname);
 	item->hostname = strdup(buf);
 	if (*tmp == '\0')
