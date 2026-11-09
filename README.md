@@ -85,6 +85,39 @@ valgrind --tool=memcheck --leak-check=full --show-leak-kinds=all \
     --track-origins=yes ./amigos godocs/
 ```
 
+## Running inside Docker
+
+This Gopher server also supports Docker, since using an older technology doesn't
+mean you can't mix it up with the newest to have the best of both worlds. In
+order to make deployment easier, Docker images have been provided using GitHub's
+container image repository and can be easily deployed with the following
+`docker-compose.yml` file:
+
+```yaml
+---
+services:
+  amigos:
+    image: ghcr.io/nathanpc/amigos:main
+    container_name: 'amigos'
+    restart: unless-stopped
+    ports:
+      - '70:70'
+    volumes:
+      - './docroot:/docroot'
+    environment:
+      GOPHER_HOSTNAME: 'domain.tld'
+```
+
+Only two options here should be changed to fit your environment. The first is
+the location of your gopherhole's root directory, the equivalent to the `htdocs`
+folder in the Gopher space, which can be done by altering the line below the
+`volumes` directive.
+
+The other option that should be changed is the `GOPHER_HOSTNAME` environment
+variable. This variable should contain the default hostname that can be used to
+reach our own server. This is used by amigos to provide a hostname of the server
+when the user doesn't specify one in a `gophermap`.
+
 ## gophermap
 
 This server implementation supports the usage of `gophermap` files inside
