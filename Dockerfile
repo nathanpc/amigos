@@ -20,5 +20,4 @@ COPY ./filetypes.conf .
 COPY --from=builder /app/amigos .
 
 EXPOSE 70
-VOLUME /docroot
 ENTRYPOINT /app/amigos $GOPHER_HOSTNAME 70 /docroot
